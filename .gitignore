@@ -1,0 +1,89 @@
+# Este repositorio es PÚBLICO: existe para tener minutos de runner de macOS sin
+# límite, que es lo que hace falta para firmar y notarizar. Todo lo que se liste
+# acá es lo que NO va a estar a la vista de cualquiera.
+#
+# Antes de agregar un archivo nuevo al repo, la pregunta es si te molestaría que
+# lo lea un desconocido. Un archivo que entra en el historial ya no sale.
+
+# ── lo que se vende ──────────────────────────────────────────────────────────
+# El código del producto viaja CIFRADO en contenido-cifrado/app.mfenc y el
+# workflow lo descifra con el secret BANCADA_CONTENIDO_KEY. Los originales no se
+# suben nunca. Ver scripts/contenido-cifrado.mjs.
+#
+# Cualquier archivo nuevo con código del producto va acá Y en la lista ENTRADAS
+# de ese script.
+/main.js
+/preload.js
+/src/
+
+# Las pruebas importan las reglas de negocio del producto: viajan cifradas dentro
+# del mismo paquete (las unitarias) o se quedan en la máquina de desarrollo (e2e,
+# capturas, salidas).
+/pruebas/
+
+# ── secretos ─────────────────────────────────────────────────────────────────
+# El certificado y las claves viven fuera del proyecto (Escritorio, firma-apple),
+# pero si alguna vez se copian acá por comodidad, que no salgan.
+*.p12
+*.key
+*.cer
+*.pem
+*.b64
+*.env
+.env*
+p12-password*
+*.pfx
+*.p8
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.keychain
+*.keychain-db
+SECRETS*
+*credencial*
+firma-apple/
+*.mfkey
+bancada-contenido.key
+.npmrc
+*password*
+*passwd*
+*secret*
+*token*
+*.csr
+*.keystore
+*.jks
+id_rsa*
+id_ed25519*
+apple-app-specific-password*
+apple-id*
+clave*.txt
+
+# ── lo que se compila o se genera ────────────────────────────────────────────
+node_modules/
+dist/
+out/
+release/
+
+# Lo que arman los scripts y el workflow para subir como artefacto.
+/Entrega Mac/
+/sellado/
+/bancada-mac-prueba/
+
+# Ningún instalador, esté donde esté: pesan más de 90 MB y GitHub rechaza el push
+# entero. Y subirlos sin sellar sería regalar la aplicación.
+*.dmg
+*.exe
+*.blockmap
+
+# Los trabajos de ejemplo y las capturas de las guías.
+*.bancada
+capturas/
+/entrega/
+
+# La guía del comprador es contenido de la entrega paga: no va a la vista.
+/.guia-mac/
+
+# ── ruido del sistema ────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.log

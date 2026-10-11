@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements para todo lo que NO es el .app de arriba:
+
+    · Contents/Frameworks/Bancada Helper.app            (el helper común)
+    · Contents/Frameworks/Bancada Helper (Renderer).app
+    · Contents/Frameworks/Bancada Helper (GPU).app
+    · Contents/Frameworks/Bancada Helper (Plugin).app
+
+  QUIÉN DECIDE QUE SE USE ESTE ARCHIVO: getOptionsForFile() de app-builder-lib
+  resuelve el entitlements por archivo. Si lo que firma no es el .app de arriba,
+  usa mac.entitlementsInherit.
+
+  NO hay ningún com.apple.security.inherit acá: esa clave es del App Sandbox y
+  esta app no está en sandbox.
+
+  ES UNA COPIA EXACTA de entitlements.mac.plist A PROPÓSITO. Los entitlements no
+  se heredan de padre a hijo, y el Helper (Renderer) es el proceso que corre V8:
+  sin allow-jit el renderer muere al arrancar y la app abre EN BLANCO. Lo mismo
+  vale para disable-library-validation, cuya razón está explicada en el otro
+  archivo.
+
+  Si tocás una clave acá, tocala en entitlements.mac.plist.
+-->
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

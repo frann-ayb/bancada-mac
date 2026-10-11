@@ -1,0 +1,165 @@
+# Corre las pruebas de Bancada en macOS, con la app de verdad.
+#
+# QUÉ HACE: descifra el código, corre los 10 tests unitarios en Node y después
+# el recorrido de punta a punta (pruebas/e2e.js) manejando la app real, con el
+# flujo 9 que sólo existe en macOS: abrir un .bancada con la app ya abierta o
+# sin ventana, el menú nativo, Cmd+tecla y el lugar de los semáforos.
+#
+# POR QUÉ ASÍ:
+#   · El repo es PÚBLICO (por los minutos de macOS) y el código del producto no
+#     puede estar en claro. Se descifra acá, adentro del runner, con el secret.
+#   · Los logs de un repo público los lee cualquiera, y las pruebas repiten
+#     reglas de negocio en su salida. Por eso cada prueba manda su salida a un
+#     archivo y a la consola sólo va un renglón por prueba; el detalle, las
+#     capturas y los PDF se suben SELLADOS y se abren localmente con `abrir`.
+#
+# NO corre en pull_request: un fork no recibe los secrets y, además, no hay
+# que ejecutar código ajeno con la clave a mano.
+name: Pruebas en Mac
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pruebas-mac
+  cancel-in-progress: true
+
+jobs:
+  probar:
+    # macos-15 es Apple Silicon y tiene sesión gráfica: Electron puede abrir
+    # ventana. Lo que NO está verificado es que el runner le dé foco a la
+    # ventana para teclas reales: el flujo 9 lo detecta y lo informa PARCIAL.
+    runs-on: macos-15
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tiene que estar la clave del código
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          [ -n "$BANCADA_CONTENIDO_KEY" ] || { echo "Falta el secret BANCADA_CONTENIDO_KEY."; exit 1; }
+          echo "Clave presente."
+
+      # Node 22 y no el del sistema: los tests usan import/export sin
+      # package.json "type: module" y dependen de la detección de módulos, y
+      # Electron 43 exige Node >= 22.12.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Descifrar el código del producto
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          set -e
+          node scripts/contenido-cifrado.mjs descifrar
+          # Las pruebas pueden venir en un paquete aparte. Si no está, ya
+          # estaban en el repo o dentro del paquete del código.
+          if [ -f contenido-cifrado/pruebas.mfenc ]; then
+            node scripts/contenido-cifrado.mjs abrir contenido-cifrado/pruebas.mfenc .
+          fi
+          if [ ! -f main.js ] || [ ! -f preload.js ] || [ ! -f src/index.html ]; then
+            echo "El descifrado no dejó main.js, preload.js y src/."
+            exit 1
+          fi
+          ls pruebas/*.test.mjs >/dev/null 2>&1 || { echo "No hay tests unitarios."; exit 1; }
+          # El recorrido de punta a punta es opcional: sólo corre si el paquete
+          # de pruebas (contenido-cifrado/pruebas.mfenc) lo trajo. Sin él, esta
+          # corrida valida los unitarios y avisa en vez de cortar.
+          [ -f pruebas/e2e.js ] || echo "Aviso: no está pruebas/e2e.js; se saltea el recorrido de punta a punta."
+          echo "Código descifrado."
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Guardar el binario de Electron entre corridas
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-mac-${{ hashFiles('package-lock.json') }}
+
+      # Un renglón por prueba. La salida completa va a un archivo que sólo
+      # sale del runner sellado.
+      - name: Tests unitarios
+        run: |
+          mkdir -p "$RUNNER_TEMP/evidencia/unitarios"
+          FALLO=0
+          for T in pruebas/*.test.mjs; do
+            N=$(basename "$T" .test.mjs)
+            LOG="$RUNNER_TEMP/evidencia/unitarios/$N.log"
+            set +e
+            node "$T" > "$LOG" 2>&1
+            C=$?
+            set -e
+            [ "$C" = 0 ] || FALLO=1
+            # La línea final de cada prueba trae el conteo; el resto no se muestra.
+            echo "$N exit=$C | $(tail -n 1 "$LOG" | cut -c1-110)"
+          done
+          exit $FALLO
+
+      - name: Diagnóstico gráfico (sólo informativo)
+        continue-on-error: true
+        run: |
+          sw_vers
+          echo "sesión: $(launchctl managername 2>&1)"
+          pgrep -x WindowServer >/dev/null && echo "WindowServer: activo" || echo "WindowServer: NO está"
+          system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Resolution|UI Looks' || true
+
+      # Sin --rapido: se espera la vuelta del autoguardado de verdad, que es lo
+      # que el acto 2 recupera después del cierre sucio. El código de salida
+      # del arnés ya vale 1 ante cualquier falla o flujo que no dejó rastro.
+      - name: Recorrido de punta a punta
+        if: hashFiles('pruebas/e2e.js') != ''
+        timeout-minutes: 15
+        run: |
+          set -e
+          mkdir -p "$RUNNER_TEMP/evidencia"
+          # La ruta del binario la resuelve el propio paquete `electron`
+          # (en macOS es Electron.app/Contents/MacOS/Electron).
+          ELECTRON=$(env -u ELECTRON_RUN_AS_NODE node -p "require('electron')")
+          echo "Electron: $(basename "$ELECTRON")"
+          set +e
+          env -u ELECTRON_RUN_AS_NODE "$ELECTRON" pruebas/e2e.js \
+            > "$RUNNER_TEMP/evidencia/e2e.log" 2>&1
+          C=$?
+          set -e
+          echo "e2e exit=$C"
+          # Sólo el resumen: renglones de flujo y de totales, sin datos de dominio.
+          grep -E '^  (PASA|FALLA|PARCIAL) +[0-9]|flujos pasan|comprobaciones en verde|RESULTADO|entorno:' \
+            "$RUNNER_TEMP/evidencia/e2e.log" | cut -c1-110 || true
+          exit $C
+
+      # Se corre siempre: justamente cuando algo falla es cuando hacen falta.
+      - name: Sellar la evidencia
+        if: always()
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          set -e
+          E="$RUNNER_TEMP/evidencia"
+          mkdir -p "$E" sellado
+          # El arnés escribe capturas, documentos y resultados bajo bancada-e2e.
+          if [ -d "$RUNNER_TEMP/bancada-e2e" ]; then
+            mkdir -p "$E/e2e"
+            cp -R "$RUNNER_TEMP/bancada-e2e/capturas" "$E/e2e/" 2>/dev/null || true
+            cp -R "$RUNNER_TEMP/bancada-e2e/salida" "$E/e2e/" 2>/dev/null || true
+            cp -R "$RUNNER_TEMP/bancada-e2e/resultados" "$E/e2e/" 2>/dev/null || true
+          fi
+          # Los unitarios de plantillas escriben su salida dentro del árbol.
+          if [ -d pruebas/salida ]; then cp -R pruebas/salida "$E/unitarios-salida"; fi
+          node scripts/contenido-cifrado.mjs sellar "$E" sellado/evidencia-pruebas-mac.mfenc
+
+      - name: Subir la evidencia sellada
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pruebas-mac-evidencia
+          path: sellado/evidencia-pruebas-mac.mfenc
+          if-no-files-found: error
+          retention-days: 7

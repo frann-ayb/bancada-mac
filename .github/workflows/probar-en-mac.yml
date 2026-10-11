@@ -1,0 +1,413 @@
+# La verificación más completa posible sin tener una Mac en la mano.
+#
+# NO compila nada: baja el .dmg que YA se firmó y notarizó en "Compilar para
+# Mac" y lo trata como lo trataría un comprador. Probar el artefacto que se
+# vende, y no uno recién compilado, es la diferencia entre verificar el
+# producto y verificar el proceso.
+#
+# QUÉ PRUEBA, en orden de importancia:
+#   1. Que Gatekeeper acepte la app con la cuarentena real de Safari puesta,
+#      firmada con Developer ID y notarizada.
+#   2. Que los entitlements alcancen: sin JIT / memoria ejecutable el renderer
+#      muere al abrir la ventana, y la app "abre" pero no muestra nada.
+#   3. Que la app ARRANQUE con el hardened runtime, cargue la interfaz y
+#      escriba sus datos en ~/Library/Application Support/Bancada.
+#   4. Que un .bancada pasado por argumento llegue al programa empaquetado.
+#   5. Que el Info.plist declare lo que promete (versión mínima, identificador,
+#      el tipo de archivo .bancada).
+#
+# QUÉ NO PRUEBA: clicks, menú a la vista ni semáforos a ojo. Eso es de
+# pruebas-mac.yml (sobre el código, no sobre el .app) y, para lo visual, de una
+# Mac de verdad. Tampoco abre el .app con `open -a` como paso que corta: en un
+# runner sin sesión de usuario LaunchServices puede quedarse colgado.
+#
+# SOBRE LAS ARQUITECTURAS: el runner macos-15 es Apple Silicon (arm64). El .dmg
+# arm64 se prueba ENTERO. El de Intel (x64) se prueba hasta la firma: ejecutarlo
+# pasaría por Rosetta, que no es representativo de un Mac Intel, así que acá
+# sólo se verifica firma, notarización, Gatekeeper y que el binario sea x86_64.
+name: Probar en Mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      artefacto:
+        description: 'Artefacto a probar (de una corrida de Compilar para Mac)'
+        type: choice
+        options:
+          - bancada-mac-entrega
+          - bancada-mac-prueba
+        default: bancada-mac-entrega
+      corrida:
+        description: 'ID de la corrida que lo generó. Vacío = la última que salió bien.'
+        type: string
+        default: ''
+
+# Lee el código y baja artefactos de otra corrida; no escribe nada.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: probar-mac
+  cancel-in-progress: true
+
+jobs:
+  probar:
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Buscar la corrida que dejó el artefacto
+        id: corrida
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Por el entorno y no interpolado en el script: un texto con comillas
+          # o $(...) en el campo se ejecutaría con el token a mano.
+          CORRIDA: ${{ inputs.corrida }}
+        run: |
+          set -e
+          if [ -n "$CORRIDA" ]; then
+            case "$CORRIDA" in *[!0-9]*) echo "La corrida tiene que ser un número."; exit 1 ;; esac
+            ID="$CORRIDA"
+            echo "Corrida indicada a mano: $ID"
+          else
+            ID=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/build-mac.yml/runs?status=success&per_page=20" \
+              | python3 -c "import sys,json; rs=json.load(sys.stdin)['workflow_runs']; print(rs[0]['id'] if rs else '')")
+            [ -n "$ID" ] || { echo "No hay ninguna corrida exitosa de Compilar para Mac."; exit 1; }
+            echo "Última corrida exitosa: $ID"
+          fi
+          echo "id=$ID" >> "$GITHUB_OUTPUT"
+
+      - name: Bajar el .dmg ya firmado
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artefacto }}
+          path: entrega
+          run-id: ${{ steps.corrida.outputs.id }}
+          github-token: ${{ github.token }}
+
+      # El artefacto viene SELLADO (el repo es público). Se abre con la clave.
+      - name: Abrir el artefacto sellado
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          set -e
+          [ -n "$BANCADA_CONTENIDO_KEY" ] || { echo "Falta el secret BANCADA_CONTENIDO_KEY."; exit 1; }
+          SELLADO=$(find entrega -name '*.mfenc' | head -1)
+          [ -n "$SELLADO" ] || { echo "El artefacto no trae ningún .mfenc."; exit 1; }
+          node scripts/contenido-cifrado.mjs abrir "$SELLADO" entrega
+
+      - name: Instalar como lo haría un comprador
+        run: |
+          set -e
+          find entrega -name '*.dmg' -exec ls -la {} \;
+
+          # El de Apple Silicon. Sirve el nombre de la entrega (M1, M2...) y el
+          # crudo de electron-builder (macOS-arm64.dmg).
+          DMG=$(find entrega -name "*.dmg" \( -name "*M1*" -o -name "*arm64*" \) | head -1)
+          [ -n "$DMG" ] || { echo "No encontré el .dmg de Apple Silicon."; exit 1; }
+          echo "Usando: $DMG"
+
+          hdiutil attach "$DMG" -nobrowse -quiet -mountpoint /Volumes/PruebaBancada
+          ditto "/Volumes/PruebaBancada/Bancada.app" "/Applications/Bancada.app"
+          hdiutil detach /Volumes/PruebaBancada -quiet
+          echo "Instalada en /Applications."
+
+          # Exactamente lo que le pone el navegador a un archivo bajado. Sin
+          # esto Gatekeeper ni se entera y la prueba no valdría nada. El -r
+          # es para que la marca llegue también al contenido del bundle.
+          xattr -w -r com.apple.quarantine "0083;00000000;Safari;" "/Applications/Bancada.app"
+          echo "Cuarentena aplicada:"
+          xattr -p com.apple.quarantine "/Applications/Bancada.app/Contents/MacOS/Bancada"
+
+      # ---------------------------------------------------------------------
+      # CORTA. Es la prueba de que la certificación sirve para algo.
+      # ---------------------------------------------------------------------
+      - name: Gatekeeper tiene que ACEPTAR la app
+        run: |
+          set -e
+          APP="/Applications/Bancada.app"
+          # El repo es público: el log no puede mostrar el nombre legal ni el
+          # Team ID de la firma. Los grep -q de abajo corren sobre la salida
+          # sin filtrar; sólo lo que se IMPRIME pasa por acá.
+          oculta() { sed -E 's/(Developer ID Application: ).*/\1***/; s/(TeamIdentifier=).*/\1***/'; }
+
+          echo "=== codesign: quién la firmó ==="
+          codesign -dv --verbose=4 "$APP" 2>&1 | grep -E '^(Authority|TeamIdentifier|Timestamp|Signature|CodeDirectory)' | oculta
+          if codesign -dv --verbose=4 "$APP" 2>&1 | grep -q 'Signature=adhoc'; then
+            echo "FALLA: quedó firmada ad-hoc."
+            exit 1
+          fi
+
+          echo ""
+          echo "=== el sello del bundle está intacto ==="
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+          echo ""
+          echo "=== el ticket de notarización está pegado ==="
+          xcrun stapler validate "$APP"
+
+          echo ""
+          echo "=== spctl: lo que decide si el comprador puede abrirla ==="
+          SALIDA=$(spctl -a -t exec -vvv "$APP" 2>&1); echo "$SALIDA" | oculta
+          echo "$SALIDA" | grep -q ': accepted' \
+            || { echo "FALLA: Gatekeeper la RECHAZA."; exit 1; }
+          echo "$SALIDA" | grep -q 'source=Notarized Developer ID' \
+            || { echo "FALLA: Gatekeeper no la ve notarizada."; exit 1; }
+
+          echo ""
+          echo "OK: firmada, notarizada y aceptada, con la cuarentena puesta."
+
+      # Los entitlements de Electron: sin JIT ni memoria ejecutable sin firmar,
+      # V8 no arranca y el renderer muere al abrir la ventana. Se mira en el
+      # ejecutable principal y en el helper que corre las páginas. La sintaxis
+      # de `codesign --entitlements :-` imprime el XML por stdout.
+      - name: Los entitlements tienen que estar
+        run: |
+          set -e
+          APP="/Applications/Bancada.app"
+          MAL=0
+          for B in "$APP" "$APP/Contents/Frameworks/Bancada Helper (Renderer).app"; do
+            if [ ! -d "$B" ]; then echo "FALLA: no existe $B"; MAL=1; continue; fi
+            E=$(codesign -d --entitlements :- "$B" 2>/dev/null || true)
+            for K in com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory; do
+              if echo "$E" | grep -q "$K"; then echo "OK    $(basename "$B"): $K"
+              else echo "FALLA $(basename "$B"): falta $K"; MAL=1; fi
+            done
+          done
+          # Con el sandbox puesto la app no podría abrir los archivos que el
+          # usuario elige fuera de su contenedor.
+          if codesign -d --entitlements :- "$APP" 2>/dev/null | grep -q 'com.apple.security.app-sandbox'; then
+            echo "FALLA: la app quedó con App Sandbox."; MAL=1
+          fi
+          exit $MAL
+
+      - name: El Info.plist declara lo que promete
+        run: |
+          set -e
+          APP="/Applications/Bancada.app"
+          PLIST="$APP/Contents/Info.plist"
+          plutil -p "$PLIST" | grep -E 'CFBundleIdentifier|CFBundleShortVersionString|LSMinimumSystemVersion|LSApplicationCategoryType|CFBundleName'
+          MAL=0
+          [ "$(plutil -extract CFBundleIdentifier raw "$PLIST")" = "ar.com.francoherrera.bancada" ] \
+            || { echo "FALLA: CFBundleIdentifier"; MAL=1; }
+          [ "$(plutil -extract LSMinimumSystemVersion raw "$PLIST")" = "12.0" ] \
+            || { echo "FALLA: LSMinimumSystemVersion no es 12.0"; MAL=1; }
+          VERSION=$(node -p "require('./package.json').version")
+          [ "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$VERSION" ] \
+            || { echo "FALLA: la versión del .app no es la de package.json ($VERSION)"; MAL=1; }
+          # La extensión .bancada tiene que estar declarada para que el doble
+          # clic en el Finder abra el programa.
+          plutil -convert json -o - "$PLIST" | grep -q '"bancada"' \
+            || { echo "FALLA: el tipo de archivo .bancada no está declarado"; MAL=1; }
+          exit $MAL
+
+      # Se lanza el EJECUTABLE, no `open -a`: en un runner sin sesión de usuario
+      # LaunchServices no contesta y el comando queda esperando para siempre.
+      # Lanzar el binario directo prueba lo importante (que el proceso arranque
+      # con el hardened runtime y la cuarentena puestos, cargue la ventana y
+      # escriba donde corresponde) sin depender de nadie mirando una pantalla.
+      #
+      # LÍMITE A MEDIR EN LA PRIMERA CORRIDA: no está verificado que un binario
+      # lanzado directo obtenga conexión con el WindowServer del runner. Si la
+      # ventana no carga por falta de sesión, el log lo dice; eso es "no
+      # verificable en el runner", no una falla del producto.
+      - name: Diagnóstico gráfico (sólo informativo)
+        continue-on-error: true
+        run: |
+          echo "sesión: $(launchctl managername 2>&1)"
+          pgrep -x WindowServer >/dev/null && echo "WindowServer: activo" || echo "WindowServer: NO está"
+          system_profiler SPDisplaysDataType 2>/dev/null | grep -E 'Resolution|UI Looks' || true
+
+      - name: La app tiene que ARRANCAR en cuarentena y cargar la interfaz
+        timeout-minutes: 5
+        run: |
+          set -e
+          DATOS="$HOME/Library/Application Support/Bancada"
+          rm -rf "$DATOS"
+          VERSION=$(node -p "require('./package.json').version")
+
+          # La sonda se evalúa dentro de la ventana cuando termina de cargar.
+          # Mira la plataforma que ve el preload y la que puso el documento, que
+          # la pantalla de arranque ya se haya ido, que la app esté montada, la
+          # versión que informa el proceso principal y que el almacén escriba.
+          SONDA='(async()=>({plat:window.bancada.plataforma,dp:document.documentElement.dataset.plataforma||null,ver:await window.bancada.sys.version(),arranque:!document.getElementById("arranque"),app:!!window.__app,inicial:await window.bancada.proyecto.archivoInicial(),guardo:await window.bancada.store.guardar("sonda.json",{ok:1})}))()'
+
+          # Las redirecciones no son adorno: el proceso queda vivo a propósito y
+          # heredaría las tuberías del paso, que el runner espera que se cierren.
+          BANCADA_DEBUG=1 BANCADA_SONDA_MS=5000 BANCADA_SONDA="$SONDA" \
+            "/Applications/Bancada.app/Contents/MacOS/Bancada" \
+            </dev/null > "$RUNNER_TEMP/app.log" 2>&1 &
+          APP_PID=$!
+
+          for i in $(seq 1 45); do
+            grep -q '\[SONDA' "$RUNNER_TEMP/app.log" && break
+            if ! kill -0 $APP_PID 2>/dev/null; then
+              echo "FALLA: la app murió antes de responder la sonda (el registro completo va en el artefacto sellado)."
+              exit 1
+            fi
+            sleep 2
+          done
+
+          kill $APP_PID 2>/dev/null || true
+          if ! grep -q '\[SONDA' "$RUNNER_TEMP/app.log"; then
+            echo "FALLA: la ventana no cargó en 90 segundos (¿sin sesión gráfica?). El registro completo va en el artefacto sellado."
+            exit 1
+          fi
+
+          echo "=== lo que contestó la ventana ==="
+          sed -n '/\[SONDA/,$p' "$RUNNER_TEMP/app.log"
+
+          MAL=0
+          for MARCA in 'RENDERER CAIDO' 'CARGA FALLIDA' '\[ERROR\]' 'SONDA ERROR'; do
+            if grep -q "$MARCA" "$RUNNER_TEMP/app.log"; then echo "FALLA: aparece $MARCA en el registro."; MAL=1; fi
+          done
+          grep -q '"plat": "darwin"' "$RUNNER_TEMP/app.log" || { echo "FALLA: el preload no informa darwin."; MAL=1; }
+          grep -q '"dp": "darwin"' "$RUNNER_TEMP/app.log" || { echo "FALLA: el documento no quedó marcado como darwin."; MAL=1; }
+          grep -q '"arranque": true' "$RUNNER_TEMP/app.log" || { echo "FALLA: la pantalla de arranque no se fue."; MAL=1; }
+          grep -q '"app": true' "$RUNNER_TEMP/app.log" || { echo "FALLA: la app no se montó."; MAL=1; }
+          grep -q "\"ver\": \"$VERSION\"" "$RUNNER_TEMP/app.log" || { echo "FALLA: la versión no es $VERSION."; MAL=1; }
+          [ -f "$DATOS/sonda.json" ] || { echo "FALLA: no escribió en $DATOS"; MAL=1; }
+          [ "$MAL" = 0 ] || exit 1
+          echo ""
+          echo "OK: arrancó con la cuarentena puesta, cargó la interfaz y escribió sus datos."
+
+      # Cubre el camino empaquetado de "abrir con": el programa recibe la ruta
+      # por argumento y se la devuelve a la pantalla. El doble clic real del
+      # Finder (evento open-file) lo cubre el flujo 9 de pruebas-mac.yml.
+      - name: Un .bancada pasado por argumento llega a la app
+        timeout-minutes: 5
+        run: |
+          set -e
+          ARCHIVO="$RUNNER_TEMP/Prueba.bancada"
+          printf '{"nombre":"Prueba de arranque","piezas":[],"modulos":[]}' > "$ARCHIVO"
+          SONDA='(async()=>({inicial:await window.bancada.proyecto.archivoInicial()}))()'
+          rm -f "$RUNNER_TEMP/app2.log"
+
+          BANCADA_DEBUG=1 BANCADA_SONDA_MS=5000 BANCADA_SONDA="$SONDA" \
+            "/Applications/Bancada.app/Contents/MacOS/Bancada" "$ARCHIVO" \
+            </dev/null > "$RUNNER_TEMP/app2.log" 2>&1 &
+          APP_PID=$!
+          for i in $(seq 1 45); do
+            grep -q '\[SONDA' "$RUNNER_TEMP/app2.log" 2>/dev/null && break
+            kill -0 $APP_PID 2>/dev/null || break
+            sleep 2
+          done
+          kill $APP_PID 2>/dev/null || true
+          sed -n '/\[SONDA/,$p' "$RUNNER_TEMP/app2.log"
+          grep -q "Prueba.bancada" "$RUNNER_TEMP/app2.log" \
+            || { echo "FALLA: la ruta del archivo no llegó a la pantalla."; exit 1; }
+          echo "OK: el archivo llegó."
+
+      # `open -a` puede colgarse en un runner sin sesión: va aparte, con tope y
+      # sin cortar, sólo para que el log diga si LaunchServices la reconoce.
+      - name: La app se abre por LaunchServices (informativo)
+        continue-on-error: true
+        timeout-minutes: 2
+        run: |
+          set +e
+          ( open -g -a "/Applications/Bancada.app" ) &
+          sleep 15
+          if pgrep -x Bancada >/dev/null; then
+            echo "OK: LaunchServices la abrió."
+            pkill -x Bancada
+          else
+            echo "Sin respuesta de LaunchServices en este runner (no es falla del producto)."
+          fi
+
+      # Un binario que en el runner anda porque ahí hay Homebrew, y en la Mac
+      # del comprador no abre. Se mira con otool.
+      - name: Nada depende de Homebrew
+        run: |
+          set -e
+          APP="/Applications/Bancada.app"
+          MAL=0
+          while IFS= read -r F; do
+            if otool -L "$F" 2>/dev/null | tail -n +2 | grep -Eq '/opt/homebrew|/usr/local/(lib|opt)'; then
+              echo "FALLA: $F depende de Homebrew:"
+              otool -L "$F" | grep -E '/opt/homebrew|/usr/local'
+              MAL=1
+            fi
+          done < <(find "$APP/Contents" \( -name '*.dylib' -o -name '*.so' -o -path '*/Contents/MacOS/*' \) -type f)
+          [ "$MAL" = 0 ] && echo "OK: ningún binario apunta a Homebrew."
+          exit $MAL
+
+      - name: El .dmg de Intel, hasta donde se puede probar acá
+        run: |
+          set -e
+          DMG=$(find entrega -name "*.dmg" \( -name "*Intel*" -o -name "*x64*" \) | head -1)
+          [ -n "$DMG" ] || { echo "No encontré el .dmg de Intel."; exit 1; }
+          echo "Usando: $DMG"
+
+          hdiutil attach "$DMG" -nobrowse -quiet -mountpoint /Volumes/PruebaBancadaX64
+          APP="/Volumes/PruebaBancadaX64/Bancada.app"
+          # El repo es público: el log no puede mostrar el nombre legal ni el
+          # Team ID de la firma. Los grep -q de abajo corren sobre la salida
+          # sin filtrar; sólo lo que se IMPRIME pasa por acá.
+          oculta() { sed -E 's/(Developer ID Application: ).*/\1***/; s/(TeamIdentifier=).*/\1***/'; }
+
+          echo "=== firma ==="
+          codesign -dv --verbose=4 "$APP" 2>&1 | grep -E '^(Authority|TeamIdentifier|Timestamp)' | oculta
+          codesign --verify --deep --strict "$APP" \
+            || { hdiutil detach /Volumes/PruebaBancadaX64 -quiet; echo "FALLA: sello roto."; exit 1; }
+          echo ""
+          echo "=== notarización y Gatekeeper ==="
+          xcrun stapler validate "$APP"
+          spctl -a -t exec -vvv "$APP" > "$RUNNER_TEMP/spctl-x64.txt" 2>&1 || true
+          oculta < "$RUNNER_TEMP/spctl-x64.txt"
+          grep -q ': accepted' "$RUNNER_TEMP/spctl-x64.txt" \
+            || { hdiutil detach /Volumes/PruebaBancadaX64 -quiet; echo "FALLA: rechazada."; exit 1; }
+          echo ""
+          echo "=== su ejecutable es x86_64 ==="
+          ARCHS=$(lipo -archs "$APP/Contents/MacOS/Bancada")
+          echo "$ARCHS"
+          hdiutil detach /Volumes/PruebaBancadaX64 -quiet
+          echo "$ARCHS" | grep -q x86_64 || { echo "FALLA: no es x86_64."; exit 1; }
+          echo ""
+          echo "OK: firmada, notarizada y aceptada. Ejecutarla no se prueba acá:"
+          echo "    este runner es Apple Silicon y correría por Rosetta."
+
+      - name: Resumen
+        if: always()
+        run: |
+          {
+            echo "## Probar en Mac"
+            echo ""
+            echo "- Artefacto: ${{ inputs.artefacto }}"
+            echo "- Corrida de compilación: ${{ steps.corrida.outputs.id }}"
+            echo "- Versión: $(node -p "require('./package.json').version")"
+            echo ""
+            echo "| .dmg | sha256 |"
+            echo "|---|---|"
+            find entrega -name '*.dmg' -print0 2>/dev/null | while IFS= read -r -d '' F; do
+              echo "| $(basename "$F") | $(shasum -a 256 "$F" | cut -d' ' -f1) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # El registro de la app puede traer datos de la sonda: va sellado.
+      - name: Sellar los registros
+        if: always()
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          set -e
+          mkdir -p registros sellado
+          cp "$RUNNER_TEMP"/app*.log registros/ 2>/dev/null || true
+          cp "$RUNNER_TEMP"/spctl-x64.txt registros/ 2>/dev/null || true
+          node scripts/contenido-cifrado.mjs sellar registros sellado/registros-probar-en-mac.mfenc
+
+      - name: Subir los registros sellados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: probar-en-mac-registros
+          path: sellado/registros-probar-en-mac.mfenc
+          if-no-files-found: ignore
+          retention-days: 7

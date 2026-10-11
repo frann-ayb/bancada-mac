@@ -1,0 +1,364 @@
+# Compila, FIRMA con Developer ID y NOTARIZA los dos .dmg de macOS de Bancada en
+# un runner de GitHub.
+#
+# Existe para poder certificar la versión de Mac sin tener una Mac. El runner trae
+# Xcode, y con él codesign, notarytool y stapler.
+#
+# QUÉ GARANTIZA:
+#   · que los dos .dmg (Apple Silicon e Intel) salgan firmados con nuestro
+#     Developer ID
+#   · que Apple los haya notarizado y que el ticket quede PEGADO al bundle
+#   · que Gatekeeper los acepte, en las dos arquitecturas
+#   · que el código viaje en el paquete y que no viajen pruebas ni trabajos
+#   · que pasen las pruebas unitarias, con la rama de Mac de main.js incluida
+#
+# QUÉ NO REEMPLAZA: usar la app en una Mac de verdad. Que Gatekeeper la acepte no
+# prueba que la ventana abra bien ni que los semáforos queden donde corresponde.
+# Eso hay que mirarlo en una Mac antes de vender.
+#
+# EL REPO ES PÚBLICO (sólo los públicos tienen minutos de macOS sin límite), así
+# que el código del producto NO está en claro: vive en contenido-cifrado/app.mfenc
+# y se descifra acá con el secret BANCADA_CONTENIDO_KEY. Por la misma razón los
+# .dmg se suben SELLADOS: un .dmg suelto en un repo público es la app regalada.
+name: Compilar para Mac
+
+on:
+  workflow_dispatch:
+    inputs:
+      armar_entrega:
+        description: 'Armar la carpeta de entrega con los nombres que ve el comprador (si no, sube los .dmg de prueba)'
+        type: boolean
+        default: false
+
+# Sólo lectura del código: el workflow no escribe en el repositorio.
+permissions:
+  contents: read
+
+# Dos corridas simultáneas pelearían por la misma caché, así que se encolan. No se
+# cancela la que está en curso: cortar una notarización a medias deja un envío
+# huérfano en Apple y tira más de media hora de compilación.
+concurrency:
+  group: build-mac
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Fijo y no `macos-latest`: esa etiqueta cambia de sistema operativo sola, y
+    # no es algo que uno quiera que pase sin enterarse justo en el pipeline que
+    # firma y notariza. El .p12 con algoritmos legacy (PBE-SHA1-3DES) se lee igual
+    # en macos-15.
+    runs-on: macos-15
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # VA PRIMERO Y CORTA, antes de gastar la compilación entera.
+      #
+      # electron-builder NO corta si faltan los secrets de notarización: imprime
+      # "skipped macOS notarization" y el build termina EN VERDE con dos .dmg sin
+      # notarizar y el aviso perdido entre miles de líneas de log.
+      #
+      # Ninguna línea de este paso imprime el valor de un secret.
+      - name: Los datos de firma tienen que estar
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          faltan=""
+          for v in CSC_LINK CSC_KEY_PASSWORD CSC_NAME APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID BANCADA_CONTENIDO_KEY; do
+            [ -z "${!v}" ] && faltan="$faltan $v"
+          done
+          if [ -n "$faltan" ]; then
+            echo "Faltan estos secretos del repositorio:$faltan"
+            echo "Cargalos en Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          # El Team ID son 10 caracteres alfanuméricos. Un salto de línea o un
+          # espacio pegado al copiar rompe notarytool con un error que no lo dice.
+          case "$APPLE_TEAM_ID" in
+            [A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9][A-Z0-9]) ;;
+            *) echo "APPLE_TEAM_ID no tiene el formato de 10 caracteres alfanuméricos."; exit 1 ;;
+          esac
+
+          # En CSC_NAME va el Common Name del certificado SIN el prefijo
+          # "Developer ID Application: ". No es una preferencia de estilo:
+          # app-builder-lib lanza InvalidConfigurationError si el nombre arranca
+          # con ese prefijo. Se compara con `case`, sin imprimir el valor.
+          case "$CSC_NAME" in
+            "Developer ID Application:"*)
+              echo "CSC_NAME arranca con 'Developer ID Application: '."
+              echo "electron-builder corta con ese prefijo: guardá el secret con"
+              echo "sólo 'NOMBRE (TEAMID)'."
+              exit 1 ;;
+          esac
+
+          # La clave de contenido son 32 bytes en base64: 44 caracteres.
+          if [ "$(printf '%s' "$BANCADA_CONTENIDO_KEY" | tr -d '[:space:]' | wc -c | tr -d ' ')" != "44" ]; then
+            echo "BANCADA_CONTENIDO_KEY no tiene el largo de una clave de 32 bytes en base64 (44 caracteres)."
+            exit 1
+          fi
+
+          # El nombre del certificado viaja en el secret, así que la clave
+          # `identity` no puede aparecer en package.json: si aparece, gana sobre
+          # CSC_NAME y el nombre legal queda escrito en un archivo del repositorio.
+          if grep -q '"identity"' package.json; then
+            echo "package.json tiene una clave 'identity'."
+            echo "El nombre del certificado va en el secret CSC_NAME, no en un"
+            echo "archivo del repositorio. Sacala."
+            exit 1
+          fi
+
+          if grep -qE 'TODO|COMPLETAR' package.json; then
+            echo "package.json tiene marcadores sin completar:"
+            grep -nE 'TODO|COMPLETAR' package.json
+            exit 1
+          fi
+
+          if [ ! -f contenido-cifrado/app.mfenc ]; then
+            echo "Falta contenido-cifrado/app.mfenc: sin el código cifrado no hay nada que compilar."
+            exit 1
+          fi
+
+          # El repo es público: el código en claro, las pruebas y los materiales
+          # de firma no pueden estar versionados. Si están, ya están a la vista y
+          # hay que saberlo ya.
+          for f in main.js preload.js; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "FALLA: $f está en el repositorio SIN cifrar. Sacalo del historial."
+              exit 1
+            fi
+          done
+          expuestos=$(git ls-files -- src pruebas .guia-mac '*password*' '*.p12' '*.key' '*.b64' '*.pfx' '*.dmg' '*.exe')
+          if [ -n "$expuestos" ]; then
+            echo "FALLA: hay archivos en el repositorio que no tienen que estar a la vista:"
+            echo "$expuestos" | head -10
+            exit 1
+          fi
+
+          echo "Los siete secretos están, el Team ID tiene buen formato, la identidad no quedó en package.json y el código no está a la vista."
+
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22 y no 20: el instalador de Electron exige >=22.12. Con Node 20
+          # el `npm ci` termina "bien" en segundos SIN bajar el binario de
+          # Electron, y después nada que lo necesite arranca. Además las pruebas
+          # unitarias son ESM sin package.json "type": necesitan la detección
+          # automática de módulos (Node 22.7 o posterior).
+          node-version: 22
+
+      # Primero se descifra y recién después se instalan las dependencias.
+      - name: Descifrar el código del producto
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: node scripts/contenido-cifrado.mjs descifrar
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      # Electron y las herramientas del .dmg que electron-builder baja en medio del
+      # build. Si están en caché no sale a la red; si no, se bajan acá con
+      # reintentos. Sin esto, un 504 del CDN de GitHub cortaba el build a mitad de
+      # camino, incluso después de haber notarizado una arquitectura.
+      - name: Caché de Electron y de electron-builder
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/Library/Caches/electron-builder
+          key: electron-mac-${{ hashFiles('package-lock.json') }}
+
+      - name: Bajar Electron para las dos arquitecturas, con reintentos
+        run: node scripts/precalentar-electron.mjs
+
+      # Corre las pruebas unitarias en macOS de verdad: main.test.mjs ejecuta
+      # main.js con process.platform === 'darwin', o sea que prueba la rama de Mac.
+      # Cuestan menos de un minuto y evitan notarizar algo que ya se sabía roto.
+      #
+      # El repositorio es público y el log lo lee cualquiera: `npm test` vuelca
+      # unas 1.600 líneas con reglas de negocio (aprovechamientos, tablas de
+      # presupuesto, rutas del código). Por eso cada prueba va a su archivo, en el
+      # log sale un renglón por prueba, y el detalle viaja dentro del artefacto
+      # sellado (build de prueba).
+      - name: Pruebas unitarias
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs-unitarios"
+          FALLO=0
+          for T in pruebas/*.test.mjs; do
+            N=$(basename "$T" .test.mjs)
+            LOG="$RUNNER_TEMP/logs-unitarios/$N.log"
+            set +e
+            node --no-warnings "$T" > "$LOG" 2>&1
+            C=$?
+            set -e
+            [ "$C" = 0 ] || FALLO=1
+            # Sólo el resultado: la última línea de cada prueba trae el conteo.
+            echo "$N exit=$C | $(tail -n 1 "$LOG" | cut -c1-110)"
+          done
+          exit $FALLO
+
+      - name: Compilar, firmar y notarizar los .dmg
+        # No hace falta armar ningún llavero a mano: createKeychain() de
+        # app-builder-lib ya hace create-keychain, unlock-keychain, import con
+        # -T /usr/bin/codesign y —lo que casi todos se olvidan—
+        # set-key-partition-list, cuya ausencia produce el diálogo "codesign wants
+        # to access key" que cuelga el CI para siempre.
+        #
+        # La notarización sube el .app a Apple y espera el veredicto, una vez por
+        # arquitectura. Suele tardar de 2 a 5 minutos por envío.
+        #
+        # `build:mac` termina con `verify:firma-mac`, que es el que corta si algo
+        # de la firma o de la notarización no quedó como tiene que quedar.
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          CSC_NAME: ${{ secrets.CSC_NAME }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # El log de electron-builder es público y puede nombrar al titular del
+          # certificado (identityName=Developer ID Application: NOMBRE (TEAMID)).
+          # El enmascarado de GitHub sólo tapa coincidencias exactas, así que la
+          # salida se guarda en un archivo, se muestra filtrada y el completo
+          # viaja dentro del artefacto sellado (build de prueba).
+          set +e
+          npm run build:mac > "$RUNNER_TEMP/build-mac.log" 2>&1
+          C=$?
+          set -e
+          sed -E 's/(Developer ID Application: ).*/\1***/; s/([Ii]dentityName=).*/\1***/; s/([Tt]eam[ _-]?[Ii][Dd][=: ]+).*/\1***/; s/(TeamIdentifier=).*/\1***/; s/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+/***@***/g' "$RUNNER_TEMP/build-mac.log"
+          exit $C
+
+      # Si Apple rechaza el envío, la respuesta del submit NO dice por qué: hay
+      # que pedirle el log. Es el único lugar donde figura el binario exacto y el
+      # motivo ("does not have the hardened runtime enabled", por ejemplo).
+      #
+      # El historial de notarytool es el de TODA la cuenta de Apple, que es la
+      # misma de los otros productos: en un log público no se imprime. Se lo lee
+      # en silencio y sólo se toma el id del envío más reciente cuyo archivo se
+      # llama Bancada; lo único que sale al log es el detalle de ESE envío.
+      - name: Si Apple rechazó el envío, pedirle el detalle
+        if: failure()
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set +e
+          xcrun notarytool history --apple-id "$APPLE_ID"             --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID"             --output-format json > "$RUNNER_TEMP/historial.json" 2>/dev/null
+          ID=$(node -e '
+            try {
+              const h = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+              const mios = (h.history || [])
+                .filter((e) => /bancada/i.test(e.name || ""))
+                .sort((a, b) => String(b.createdDate).localeCompare(String(a.createdDate)));
+              if (mios.length) process.stdout.write(String(mios[0].id));
+            } catch {}
+          ' "$RUNNER_TEMP/historial.json")
+          rm -f "$RUNNER_TEMP/historial.json"
+          if [ -n "$ID" ]; then
+            echo "=== log del envío $ID ==="
+            xcrun notarytool log "$ID" --apple-id "$APPLE_ID"               --password "$APPLE_APP_SPECIFIC_PASSWORD" --team-id "$APPLE_TEAM_ID"
+          else
+            echo "(no hay ningún envío de Bancada en el historial: el build falló antes de llegar a notarizar)"
+          fi
+          exit 0
+
+      # `verify:firma-mac` ya corrió adentro de build:mac y cortó si algo salió
+      # mal. Esto es para que quede LEGIBLE en el log qué firma quedó, sin tener
+      # que bajar el .dmg.
+      - name: Qué firma quedó, en las dos arquitecturas
+        run: |
+          set -eo pipefail
+          # El log es público. El nombre del titular del certificado y el Team ID
+          # no salen: el enmascarado de GitHub sólo tapa coincidencias exactas del
+          # secret, y un nombre parcial o con otra capitalización se vería.
+          # Lo que se necesita saber (que la línea exista y de qué tipo es) queda.
+          oculta() {
+            sed -E 's/(Developer ID Application: ).*/\1***/; s/(TeamIdentifier=).*/\1***/'
+          }
+          echo "Carpetas que dejó electron-builder:"
+          ls -1 dist
+          echo ""
+          # El nombre sale de package.json, igual que en verify-firma-mac.
+          NOMBRE=$(node -p "require('./package.json').productName")
+          [ -n "$NOMBRE" ] || { echo "No pude leer productName de package.json"; exit 1; }
+          for APP in "dist/mac-arm64/$NOMBRE.app" "dist/mac/$NOMBRE.app"; do
+            [ -d "$APP" ] || { echo "no existe $APP"; exit 1; }
+            echo "=============================================================="
+            echo " $APP"
+            echo "=============================================================="
+            echo "--- FIRMA: tiene que haber 'Authority=Developer ID Application:',"
+            echo "    tres líneas Authority terminando en Apple Root CA, 'Timestamp='"
+            echo "    y 'flags=...runtime'. Si dice 'Signature=adhoc', no se firmó."
+            codesign -dv --verbose=4 "$APP" 2>&1 \
+              | grep -E '^(Authority|TeamIdentifier|Timestamp|Signature|CodeDirectory)' | oculta
+            echo ""
+            echo "--- NOTARIZACIÓN: 'The validate action worked!'"
+            xcrun stapler validate "$APP"
+            echo ""
+            echo "--- GATEKEEPER: 'accepted' y 'source=Notarized Developer ID'"
+            # spctl imprime `origin=Developer ID Application: NOMBRE (TEAMID)`.
+            spctl -a -t exec -vvv "$APP" 2>&1 | oculta
+            echo ""
+            echo "--- ARQUITECTURA del ejecutable"
+            lipo -archs "$APP/Contents/MacOS/$NOMBRE"
+            echo ""
+          done
+
+      # Un .dmg suelto en un repo público es la app entera, gratis: en los dos
+      # casos se sube SELLADO con la clave del contenido, y se abre en la máquina
+      # de desarrollo con `node scripts/contenido-cifrado.mjs abrir`.
+      - name: Sellar los .dmg de prueba
+        if: ${{ !inputs.armar_entrega }}
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          set -e
+          mkdir -p bancada-mac-prueba sellado
+          cp dist/*.dmg bancada-mac-prueba/
+          # El detalle de las pruebas unitarias viaja sellado, no en el log público.
+          if [ -f "$RUNNER_TEMP/build-mac.log" ]; then
+            cp "$RUNNER_TEMP/build-mac.log" bancada-mac-prueba/build-mac.log
+          fi
+          if [ -d "$RUNNER_TEMP/logs-unitarios" ]; then
+            cp -R "$RUNNER_TEMP/logs-unitarios" bancada-mac-prueba/logs-unitarios
+          fi
+          node scripts/contenido-cifrado.mjs sellar bancada-mac-prueba sellado/bancada-mac-prueba.mfenc
+
+      - name: Subir los .dmg sellados (build de prueba)
+        if: ${{ !inputs.armar_entrega }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bancada-mac-prueba
+          path: sellado/bancada-mac-prueba.mfenc
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Armar la carpeta de entrega
+        if: ${{ inputs.armar_entrega }}
+        run: npm run entrega:mac
+
+      - name: Sellar la carpeta de entrega
+        if: ${{ inputs.armar_entrega }}
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          set -e
+          mkdir -p sellado
+          node scripts/contenido-cifrado.mjs sellar 'Entrega Mac' sellado/bancada-mac-entrega.mfenc
+
+      - name: Subir la carpeta de entrega sellada
+        if: ${{ inputs.armar_entrega }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bancada-mac-entrega
+          path: sellado/bancada-mac-entrega.mfenc
+          if-no-files-found: error
+          retention-days: 30

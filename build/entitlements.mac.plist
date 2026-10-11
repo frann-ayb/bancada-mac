@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements del .app principal de Bancada.
+
+  CONTEXTO: distribución con Developer ID, FUERA de la Mac App Store. No hay App
+  Sandbox: nada de com.apple.security.app-sandbox ni de la familia
+  com.apple.security.files.*, que además cambiarían dónde puede leer y escribir
+  el programa. El acceso a Documentos, Escritorio y Descargas lo resuelve TCC con
+  las descripciones de uso que están en package.json (build.mac.extendInfo), no
+  con un entitlement.
+
+  Este archivo existe porque el hardened runtime está ACTIVADO (la notarización
+  lo exige). Cada clave de acá es el mínimo que Electron necesita para seguir
+  andando con esa restricción. Todo lo que se agregue de más es una relajación
+  de seguridad que Apple mira con lupa.
+
+  QUÉ NO ESTÁ, Y POR QUÉ:
+
+    com.apple.security.device.audio-input / camera
+      Bancada no graba ni usa la cámara. Un entitlement de micrófono sin uso le
+      da a macOS un motivo para mostrar un cartel de permiso que asusta al
+      comprador sin razón.
+
+  QUÉ SÍ ESTÁ, Y POR QUÉ (aunque parezca de más):
+
+    com.apple.security.cs.disable-library-validation
+      Bancada no carga librerías de terceros, pero el hardened runtime con
+      validación de librerías exige que todo lo que carga un proceso esté firmado
+      con el MISMO Team ID o sea de Apple. La plantilla por defecto de
+      electron-builder (templates/entitlements.mac.plist) y la de
+      @electron/osx-sign la incluyen por esa razón, y el build de Mediflashy,
+      que ya se firmó y notarizó, también. Sin una Mac para probar el primer
+      arranque, es preferible el valor probado: si faltara, el síntoma sería
+      "library load disallowed" en la Mac del comprador y no un error de
+      notarización (Apple acepta la clave).
+
+  OJO: el archivo hermano entitlements.mac.inherit.plist se aplica a los
+  procesos Helper. Los entitlements NO se heredan de padre a hijo: lo que falte
+  allá falta de verdad. Si tocás una clave acá, tocala allá.
+-->
+<plist version="1.0">
+<dict>
+  <!-- V8 compila JavaScript a código máquina en tiempo de ejecución. Sin esto el
+       hardened runtime le prohíbe a Chromium mapear páginas ejecutables y el
+       proceso muere apenas arranca. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+
+  <!-- Chromium tiene rutas que escriben en páginas ya marcadas como ejecutables.
+       Es lo que pide la documentación de notarización de Electron y lo que trae
+       la plantilla propia de electron-builder. -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- Ver la explicación arriba: es el valor por defecto de electron-builder. -->
+  <key>com.apple.security.cs.disable-library-validation</key>
+  <true/>
+</dict>
+</plist>

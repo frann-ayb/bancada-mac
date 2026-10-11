@@ -1,0 +1,134 @@
+{
+  "name": "bancada",
+  "productName": "Bancada",
+  "version": "1.0.0",
+  "description": "Optimizador de cortes y diseño de muebles para carpinteros y herreros",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "icono": "electron pruebas/hacer-icono.js",
+    "dist": "electron-builder --win --x64",
+    "instalador": "electron-builder --win nsis --x64",
+    "portable": "electron-builder --win portable --x64",
+    "sin-empaquetar": "electron-builder --win --x64 --dir",
+    "build:win": "npm run contenido:verificar && npm run dist",
+    "test": "node pruebas/ambiente.test.mjs && node pruebas/armado.test.mjs && node pruebas/despiece.test.mjs && node pruebas/main.test.mjs && node pruebas/parser.test.mjs && node pruebas/plantillas.test.mjs && node pruebas/presupuesto-ui.test.mjs && node pruebas/presupuesto.test.mjs && node pruebas/solver1d.test.mjs && node pruebas/solver2d.test.mjs",
+    "contenido:cifrar": "node scripts/contenido-cifrado.mjs cifrar",
+    "contenido:descifrar": "node scripts/contenido-cifrado.mjs descifrar",
+    "contenido:verificar": "node scripts/contenido-cifrado.mjs verificar",
+    "precalentar": "node scripts/precalentar-electron.mjs",
+    "icono:mac": "electron scripts/hacer-icono-mac.js",
+    "build:mac": "electron-builder --mac --publish never -c.npmRebuild=false && node scripts/verify-firma-mac.mjs",
+    "verify:firma-mac": "node scripts/verify-firma-mac.mjs",
+    "entrega:mac": "node scripts/armar-entrega-mac.mjs"
+  },
+  "author": {
+    "name": "Bancada"
+  },
+  "license": "UNLICENSED",
+  "devDependencies": {
+    "electron": "^43.7.4",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "ar.com.francoherrera.bancada",
+    "productName": "Bancada",
+    "copyright": "© 2026 Bancada",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "asar": true,
+    "compression": "maximum",
+    "removePackageScripts": true,
+    "electronLanguages": ["es-419", "es", "en-US"],
+    "files": [
+      "main.js",
+      "preload.js",
+      "src/**/*",
+      "!**/*.md",
+      "!**/*.ps1",
+      "!**/*.test.mjs",
+      "!**/*.bancada",
+      "!**/*.map"
+    ],
+    "fileAssociations": [
+      {
+        "ext": "bancada",
+        "name": "Bancada.Trabajo",
+        "description": "Trabajo de Bancada",
+        "icon": "archivo.ico",
+        "role": "Editor"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "legalTrademarks": "Bancada",
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Bancada",
+      "menuCategory": false,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico",
+      "uninstallDisplayName": "Bancada ${version}",
+      "artifactName": "Bancada-${version}-instalador.${ext}",
+      "include": "instalador.nsh",
+      "language": "3082",
+      "displayLanguageSelector": false
+    },
+    "portable": {
+      "artifactName": "Bancada-${version}-portable.${ext}",
+      "unicode": true,
+      "requestExecutionLevel": "user"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["arm64", "x64"] }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.business",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "notarize": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.inherit.plist",
+      "minimumSystemVersion": "12.0",
+      "darkModeSupport": true,
+      "electronLanguages": ["es", "es_419", "es-419", "en", "en_US", "en-US"],
+      "extendInfo": {
+        "NSDocumentsFolderUsageDescription": "Bancada solo abre y guarda los trabajos y los PDF que vos elegís. Nada de lo que abrís se envía a ningún lado.",
+        "NSDesktopFolderUsageDescription": "Bancada solo abre y guarda los trabajos y los PDF que vos elegís. Nada de lo que abrís se envía a ningún lado.",
+        "NSDownloadsFolderUsageDescription": "Bancada solo abre y guarda los trabajos y los PDF que vos elegís. Nada de lo que abrís se envía a ningún lado.",
+        "UTExportedTypeDeclarations": [
+          {
+            "UTTypeIdentifier": "ar.com.francoherrera.bancada.trabajo",
+            "UTTypeDescription": "Trabajo de Bancada",
+            "UTTypeConformsTo": ["public.data"],
+            "UTTypeIconFile": "archivo.icns",
+            "UTTypeTagSpecification": { "public.filename-extension": ["bancada"] }
+          }
+        ]
+      }
+    },
+    "dmg": {
+      "artifactName": "Bancada-${version}-macOS-${arch}.${ext}",
+      "title": "Bancada ${version}",
+      "sign": false,
+      "writeUpdateInfo": false
+    }
+  }
+}
