@@ -87,3 +87,7 @@ capturas/
 .DS_Store
 Thumbs.db
 *.log
+
+# artefactos descargados de las corridas
+/_artefactos/
+/Entrega Mac/
