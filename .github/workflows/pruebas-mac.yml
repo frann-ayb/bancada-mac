@@ -120,9 +120,22 @@ jobs:
         run: |
           set -e
           mkdir -p "$RUNNER_TEMP/evidencia"
+          # Electron 43 ya no baja su binario al instalar: lo baja la primera vez
+          # que se le pide la ruta, e imprime "Downloading Electron binary..." en
+          # la misma salida. Si eso pasa dentro de $(...), el aviso se cuela en la
+          # ruta y el comando sale con 127. Por eso se instala antes, aparte y con
+          # reintentos, y recién después se le pregunta la ruta.
+          OK=0
+          for I in 1 2 3; do
+            if env -u ELECTRON_RUN_AS_NODE node node_modules/electron/install.js; then OK=1; break; fi
+            echo "Descarga de Electron: intento $I fallido."
+            sleep $((I * 15))
+          done
+          [ "$OK" = 1 ] || { echo "No se pudo bajar Electron."; exit 1; }
           # La ruta del binario la resuelve el propio paquete `electron`
           # (en macOS es Electron.app/Contents/MacOS/Electron).
-          ELECTRON=$(env -u ELECTRON_RUN_AS_NODE node -p "require('electron')")
+          ELECTRON=$(env -u ELECTRON_RUN_AS_NODE node -p "require('electron')" | tail -n 1)
+          [ -x "$ELECTRON" ] || { echo "No existe el binario de Electron: $(basename "$ELECTRON")"; exit 1; }
           echo "Electron: $(basename "$ELECTRON")"
           set +e
           env -u ELECTRON_RUN_AS_NODE "$ELECTRON" pruebas/e2e.js \
