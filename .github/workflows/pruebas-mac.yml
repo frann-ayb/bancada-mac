@@ -1,6 +1,6 @@
 # Corre las pruebas de Bancada en macOS, con la app de verdad.
 #
-# QUÉ HACE: descifra el código, corre los 10 tests unitarios en Node y después
+# QUÉ HACE: descifra el código, corre los 14 tests unitarios en Node y después
 # el recorrido de punta a punta (pruebas/e2e.js) manejando la app real, con el
 # flujo 9 que sólo existe en macOS: abrir un .bancada con la app ya abierta o
 # sin ventana, el menú nativo, Cmd+tecla y el lugar de los semáforos.

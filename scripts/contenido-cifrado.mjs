@@ -67,7 +67,8 @@ const MARCA_PAQUETE = Buffer.from('BCPKG1')
  */
 const ENTRADAS = ['main.js', 'preload.js', 'src']
 const PRUEBAS_DIR = 'pruebas'
-const esPrueba = (nombre) => nombre.endsWith('.test.mjs')
+// demo.bancada es el trabajo que lee plantillas.test.mjs: sin él esa prueba falla en el runner.
+const esPrueba = (nombre) => nombre.endsWith('.test.mjs') || nombre === 'demo.bancada'
 
 /* -------------------------------- clave --------------------------------- */
 

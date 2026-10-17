@@ -1,7 +1,7 @@
 {
   "name": "bancada",
   "productName": "Bancada",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Optimizador de cortes y diseño de muebles para carpinteros y herreros",
   "main": "main.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "portable": "electron-builder --win portable --x64",
     "sin-empaquetar": "electron-builder --win --x64 --dir",
     "build:win": "npm run contenido:verificar && npm run dist",
-    "test": "node pruebas/ambiente.test.mjs && node pruebas/armado.test.mjs && node pruebas/despiece.test.mjs && node pruebas/main.test.mjs && node pruebas/parser.test.mjs && node pruebas/plantillas.test.mjs && node pruebas/presupuesto-ui.test.mjs && node pruebas/presupuesto.test.mjs && node pruebas/solver1d.test.mjs && node pruebas/solver2d.test.mjs",
+    "test": "node pruebas/ambiente.test.mjs && node pruebas/armado.test.mjs && node pruebas/despiece.test.mjs && node pruebas/main.test.mjs && node pruebas/parser.test.mjs && node pruebas/plantillas.test.mjs && node pruebas/presupuesto-ui.test.mjs && node pruebas/presupuesto.test.mjs && node pruebas/solver1d.test.mjs && node pruebas/solver2d.test.mjs && node pruebas/pro-catalogo.test.mjs && node pruebas/pro-licencia.test.mjs && node pruebas/pro-ui.test.mjs && node pruebas/pro-3d.test.mjs",
     "contenido:cifrar": "node scripts/contenido-cifrado.mjs cifrar",
     "contenido:descifrar": "node scripts/contenido-cifrado.mjs descifrar",
     "contenido:verificar": "node scripts/contenido-cifrado.mjs verificar",

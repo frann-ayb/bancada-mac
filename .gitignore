@@ -91,3 +91,14 @@ Thumbs.db
 # artefactos descargados de las corridas
 /_artefactos/
 /Entrega Mac/
+
+# ── material de desarrollo que no viaja a este repositorio ───────────────────
+# Si alguno de estos se copiara por comodidad, que no salga.
+/pro-fuente/
+/docs/
+/CONTRATOS.md
+/LEEME.md
+/scripts/pro-*
+/scripts/lib/
+codigo-general*
+firma-pro/

@@ -33,7 +33,7 @@ El detalle paso a paso, con los secretos y las dos corridas, está en
 | Comando | Para qué |
 |---|---|
 | `npm start` | abrir el programa en desarrollo |
-| `npm test` | las 10 pruebas unitarias |
+| `npm test` | las 14 pruebas unitarias |
 | `npm run contenido:cifrar` | volver a cifrar el código después de tocarlo |
 | `npm run contenido:verificar` | comprobar que el cifrado está al día |
 | `npm run build:win` | compilar Windows (corta si el cifrado quedó viejo) |
