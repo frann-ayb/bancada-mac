@@ -200,6 +200,12 @@ jobs:
             [ "$C" = 0 ] || FALLO=1
             # Sólo el resultado: la última línea de cada prueba trae el conteo.
             echo "$N exit=$C | $(tail -n 1 "$LOG" | cut -c1-110)"
+            if [ "$C" != 0 ]; then
+              # Sólo el nombre de la prueba que falló y su mensaje, o el tipo de
+              # error si el proceso se cayó: nunca un renglón del código.
+              grep -E -A1 '^  FALLA ' "$LOG" | cut -c1-200 | head -n 24 || true
+              grep -E '^[A-Za-z]*Error[ :[]' "$LOG" | cut -c1-200 | head -n 6 || true
+            fi
           done
           exit $FALLO
 
