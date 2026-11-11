@@ -2,7 +2,7 @@
 /**
  * El código del producto, encriptado, para poder compilar en un repositorio PÚBLICO.
  *
- *   node scripts/contenido-cifrado.mjs generar-clave <archivo>   # una sola vez
+ *   node scripts/contenido-cifrado.mjs generar-clave [archivo]   # una sola vez
  *   node scripts/contenido-cifrado.mjs cifrar       # en la máquina de desarrollo
  *   node scripts/contenido-cifrado.mjs descifrar    # en el runner, antes de compilar
  *   node scripts/contenido-cifrado.mjs verificar    # ¿el cifrado está al día?
@@ -21,15 +21,19 @@
  * El build de Mac corre en GitHub Actions, y sólo los repositorios públicos tienen
  * minutos de macOS sin límite. Pero en un repo público queda a la vista todo lo que
  * se sube, y el código de Bancada ES el producto: el motor de despiece, el plano de
- * corte, los presupuestos. Subirlo en claro sería regalar el programa. Y peor: en un
- * repo público cualquiera puede bajar los artefactos de una corrida, o sea el .dmg
- * terminado.
+ * corte, los presupuestos. Subirlo en claro sería regalar el
+ * programa. Y peor: en un repo público cualquiera puede bajar los artefactos de una
+ * corrida, o sea el .dmg terminado.
  *
  * Así que dos cosas viajan encriptadas:
  *
- *  · EL CÓDIGO (main.js, preload.js, src/ y las pruebas unitarias): en el repo sólo
- *    está `contenido-cifrado/app.mfenc`; los originales están en el .gitignore. El
- *    workflow lo descifra antes de compilar.
+ *  · EL CÓDIGO, en dos paquetes:
+ *      contenido-cifrado/app.mfenc      main.js, preload.js y src/ completo (incluidos
+ *                                       los paquetes cifrados de src/pro y src/editor)
+ *      contenido-cifrado/pruebas.mfenc  las pruebas unitarias que corren en el runner
+ *                                       y lo que esas pruebas necesitan para andar
+ *    En el repo sólo están esos dos archivos; los originales están en el .gitignore.
+ *    El workflow los descifra antes de compilar.
  *  · LOS ARTEFACTOS (los .dmg y la carpeta de entrega): el workflow los sella antes
  *    de subirlos, y se abren en la máquina de desarrollo con la misma clave.
  *
@@ -41,43 +45,104 @@
  * una clave equivocada no descifra "algo raro": falla.
  *
  * NUNCA se imprime la clave ni nada derivado de ella.
+ *
+ * ---------------------------------------------------------------------------
+ * Qué pruebas viajan: pruebas/ci-lista.json
+ * ---------------------------------------------------------------------------
+ *
+ * La lista de pruebas del runner NO está en este script (sería pública): vive en
+ * `pruebas/ci-lista.json`, que viaja dentro de pruebas.mfenc. Tiene dos campos:
+ *
+ *   "pruebas": nombres de archivo de pruebas/ que corre el runner, en orden
+ *   "apoyo":   archivos o carpetas de pruebas/ que esas pruebas leen (módulos de
+ *              ayuda, trabajos de ejemplo, datos de referencia)
+ *
+ * Los arneses con ventana (e2e), las capturas y las salidas se quedan en la máquina
+ * de desarrollo.
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const PAQUETE = join(ROOT, 'contenido-cifrado', 'app.mfenc')
 const CLAVE_LOCAL = join(homedir(), 'Desktop', 'firma-apple', 'bancada-contenido.key')
 const MARCA = Buffer.from('BCENC1')
 const MARCA_PAQUETE = Buffer.from('BCPKG1')
 
+/** La lista de las pruebas del runner (viaja dentro de pruebas.mfenc). */
+export const LISTA_CI = 'pruebas/ci-lista.json'
+
 /**
- * Lo que viaja cifrado. Cada entrada es un archivo o una carpeta (relativa a la
- * raíz del proyecto, con `/`). Si se agrega algo con código del producto, va acá Y
- * en el .gitignore.
- *
- * De `pruebas/` entran sólo las pruebas unitarias (*.test.mjs): son las que corre
- * `npm test` en el runner. Importan reglas de negocio del producto, así que en claro
- * serían tan públicas como el código. Los arneses e2e y las capturas se quedan en la
- * máquina de desarrollo.
+ * Lo que viaja cifrado en el paquete del código. Cada entrada es un archivo o una
+ * carpeta (relativa a la raíz del proyecto, con `/`). Si se agrega algo con código
+ * del producto, va acá Y en el .gitignore.
  */
-const ENTRADAS = ['main.js', 'preload.js', 'src']
-const PRUEBAS_DIR = 'pruebas'
-// demo.bancada es el trabajo que lee plantillas.test.mjs: sin él esa prueba falla en el runner.
-const esPrueba = (nombre) => nombre.endsWith('.test.mjs') || nombre === 'demo.bancada'
+const ENTRADAS_APP = ['main.js', 'preload.js', 'src']
+
+/** Ruido del sistema que no se cifra ni se verifica. */
+const IGNORADOS = new Set(['.DS_Store', 'Thumbs.db', 'desktop.ini'])
+
+/** Nada que parezca un secreto entra a un paquete: se corta antes de cifrar. */
+const PARECE_SECRETO = /(\.(p12|pfx|pem|key|cer|b64|env|p8|mobileprovision|keychain)$)|password|passwd|secret|credencial/i
+
+export const PAQUETES = {
+  app: {
+    archivo: 'contenido-cifrado/app.mfenc',
+    obligatorio: true,
+    listar: () => {
+      const lista = []
+      for (const e of ENTRADAS_APP) lista.push(...archivosDe(e))
+      const rutas = [...new Set(lista)].sort()
+      if (!rutas.includes('main.js') || !rutas.includes('preload.js') || !rutas.some((r) => r.startsWith('src/'))) {
+        throw new Error('Faltan main.js, preload.js o src/: no hay nada coherente que cifrar.')
+      }
+      return rutas
+    }
+  },
+  pruebas: {
+    archivo: 'contenido-cifrado/pruebas.mfenc',
+    obligatorio: true,
+    listar: () => {
+      if (!existsSync(join(ROOT, LISTA_CI))) {
+        throw new Error(`Falta ${LISTA_CI}: es la lista de pruebas que viajan al runner.`)
+      }
+      const lista = JSON.parse(readFileSync(join(ROOT, LISTA_CI), 'utf8'))
+      const pruebas = Array.isArray(lista.pruebas) ? lista.pruebas : []
+      const apoyo = Array.isArray(lista.apoyo) ? lista.apoyo : []
+      if (pruebas.length === 0) throw new Error(`${LISTA_CI} no lista ninguna prueba.`)
+      const rutas = [LISTA_CI]
+      for (const p of pruebas) {
+        if (typeof p !== 'string' || p.includes('/') || p.includes('\\') || !p.endsWith('.test.mjs')) {
+          throw new Error(`${LISTA_CI}: "${p}" no es el nombre de un archivo *.test.mjs de pruebas/.`)
+        }
+        if (!existsSync(join(ROOT, 'pruebas', p))) throw new Error(`${LISTA_CI}: no existe pruebas/${p}.`)
+        rutas.push(`pruebas/${p}`)
+      }
+      for (const a of apoyo) {
+        if (typeof a !== 'string' || a.includes('\\') || a.includes('..') || isAbsolute(a)) {
+          throw new Error(`${LISTA_CI}: la ruta de apoyo "${a}" no es válida.`)
+        }
+        const rel = `pruebas/${a.replace(/\/+$/, '')}`
+        if (!existsSync(join(ROOT, rel))) throw new Error(`${LISTA_CI}: no existe ${rel}.`)
+        rutas.push(...archivosDe(rel))
+      }
+      return [...new Set(rutas)].sort()
+    }
+  }
+}
 
 /* -------------------------------- clave --------------------------------- */
 
-/** Opciones --clave-archivo y --forzar, sacadas de los argumentos. */
+/** Opciones --clave-archivo, --destino y --forzar, sacadas de los argumentos. */
 function opciones(argv) {
   const posicionales = []
-  const o = { claveArchivo: null, forzar: false }
+  const o = { claveArchivo: null, destino: null, forzar: false }
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === '--clave-archivo') o.claveArchivo = argv[++i]
+    else if (argv[i] === '--destino') o.destino = argv[++i]
     else if (argv[i] === '--forzar') o.forzar = true
     else posicionales.push(argv[i])
   }
@@ -147,25 +212,12 @@ function archivosDe(rel) {
   if (statSync(abs).isFile()) return [rel]
   const salida = []
   for (const e of readdirSync(abs, { withFileTypes: true })) {
+    if (IGNORADOS.has(e.name)) continue
     const hijo = `${rel}/${e.name}`
     if (e.isDirectory()) salida.push(...archivosDe(hijo))
     else if (e.isFile()) salida.push(hijo)
   }
   return salida
-}
-
-/** Los archivos en claro que corresponden al paquete, ordenados (el orden hace
- *  que dos empaquetados del mismo contenido den bytes idénticos). */
-function listarOriginales() {
-  const lista = []
-  for (const e of ENTRADAS) lista.push(...archivosDe(e))
-  const dirPruebas = join(ROOT, PRUEBAS_DIR)
-  if (existsSync(dirPruebas)) {
-    for (const f of readdirSync(dirPruebas, { withFileTypes: true })) {
-      if (f.isFile() && esPrueba(f.name)) lista.push(`${PRUEBAS_DIR}/${f.name}`)
-    }
-  }
-  return [...new Set(lista)].sort()
 }
 
 /** Formato: MARCA_PAQUETE, u32 cantidad, y por archivo: u16 largo de ruta, ruta
@@ -177,6 +229,9 @@ function empaquetar(rutas) {
   n.writeUInt32BE(rutas.length)
   partes.push(n)
   for (const rel of rutas) {
+    if (PARECE_SECRETO.test(basename(rel))) {
+      throw new Error(`${rel} parece un secreto o una clave: no se cifra dentro de un paquete.`)
+    }
     const datos = readFileSync(join(ROOT, rel))
     const ruta = Buffer.from(rel, 'utf8')
     const cab = Buffer.alloc(2)
@@ -215,16 +270,16 @@ function desempaquetar(buf) {
   return mapa
 }
 
-function leerPaquete(k) {
-  if (!existsSync(PAQUETE)) throw new Error('Falta contenido-cifrado/app.mfenc.')
-  return desempaquetar(descifrar(readFileSync(PAQUETE), k))
+function leerPaquete(id, k) {
+  const archivo = join(ROOT, PAQUETES[id].archivo)
+  if (!existsSync(archivo)) throw new Error(`Falta ${PAQUETES[id].archivo}.`)
+  return desempaquetar(descifrar(readFileSync(archivo), k))
 }
 
 /* ------------------------------- comandos -------------------------------- */
 
 function cmdGenerarClave(archivo) {
-  if (!archivo) throw new Error('Uso: generar-clave <archivo>')
-  const destino = resolve(archivo)
+  const destino = resolve(archivo || CLAVE_LOCAL)
   if (existsSync(destino)) throw new Error(`Ya existe ${destino}: no se pisa. Una clave perdida no se puede recuperar.`)
   mkdirSync(dirname(destino), { recursive: true })
   writeFileSync(destino, randomBytes(32).toString('base64'), { flag: 'wx' })
@@ -233,37 +288,46 @@ function cmdGenerarClave(archivo) {
 
 function cmdCifrar() {
   const k = clave()
-  const rutas = listarOriginales()
-  if (!rutas.includes('main.js') || !rutas.includes('preload.js') || !rutas.some((r) => r.startsWith('src/'))) {
-    throw new Error('Faltan main.js, preload.js o src/: no hay nada coherente que cifrar.')
-  }
-  const plano = empaquetar(rutas)
-  mkdirSync(dirname(PAQUETE), { recursive: true })
-  // Si el cifrado vigente ya corresponde a este contenido, no se reescribe: cada
-  // cifrado lleva un IV nuevo y ensuciaría el historial con un cambio que no es.
-  if (existsSync(PAQUETE)) {
-    try {
-      if (descifrar(readFileSync(PAQUETE), k).equals(plano)) {
-        console.log(`= contenido-cifrado/app.mfenc (sin cambios, ${rutas.length} archivos)`)
-        return
+  for (const id of Object.keys(PAQUETES)) {
+    const { archivo, listar } = PAQUETES[id]
+    const rutas = listar()
+    const plano = empaquetar(rutas)
+    const destino = join(ROOT, archivo)
+    mkdirSync(dirname(destino), { recursive: true })
+    // Si el cifrado vigente ya corresponde a este contenido, no se reescribe: cada
+    // cifrado lleva un IV nuevo y ensuciaría el historial con un cambio que no es.
+    if (existsSync(destino)) {
+      try {
+        if (descifrar(readFileSync(destino), k).equals(plano)) {
+          console.log(`= ${archivo} (sin cambios, ${rutas.length} archivos)`)
+          continue
+        }
+      } catch {
+        /* se reescribe */
       }
-    } catch {
-      /* se reescribe */
     }
+    writeFileSync(destino, cifrar(plano, k))
+    console.log(`✓ ${rutas.length} archivos → ${archivo} (${plano.length} bytes en claro)`)
   }
-  writeFileSync(PAQUETE, cifrar(plano, k))
-  console.log(`✓ ${rutas.length} archivos → contenido-cifrado/app.mfenc (${plano.length} bytes en claro)`)
 }
 
-function cmdDescifrar(forzar) {
+/**
+ * Descifra los dos paquetes. Sin `--destino` lo hace en la raíz del proyecto (así
+ * lo usa el runner). Con `--destino <carpeta>` lo deja en otra carpeta, sin tocar
+ * el proyecto: sirve para comprobar el cifrado sin pisar nada.
+ */
+function cmdDescifrar(forzar, destinoOpcion) {
   const k = clave()
-  const mapa = leerPaquete(k)
+  const base = destinoOpcion ? resolve(destinoOpcion) : ROOT
+  const mapas = Object.keys(PAQUETES).map((id) => [id, leerPaquete(id, k)])
   // No se descifra encima de trabajo sin cifrar: en la máquina de desarrollo
   // pisaría ediciones recientes con la versión del último cifrado.
   const distintos = []
-  for (const [rel, datos] of mapa) {
-    const destino = join(ROOT, rel)
-    if (existsSync(destino) && !readFileSync(destino).equals(datos)) distintos.push(rel)
+  for (const [, mapa] of mapas) {
+    for (const [rel, datos] of mapa) {
+      const destino = join(base, rel)
+      if (existsSync(destino) && !readFileSync(destino).equals(datos)) distintos.push(rel)
+    }
   }
   if (distintos.length > 0 && !forzar) {
     throw new Error(
@@ -271,12 +335,14 @@ function cmdDescifrar(forzar) {
         `${distintos.length > 3 ? ', …' : ''}). Si querés pisarlos, repetí con --forzar; si son cambios nuevos, corré "cifrar".`
     )
   }
-  for (const [rel, datos] of mapa) {
-    const destino = join(ROOT, rel)
-    mkdirSync(dirname(destino), { recursive: true })
-    writeFileSync(destino, datos)
+  for (const [id, mapa] of mapas) {
+    for (const [rel, datos] of mapa) {
+      const destino = join(base, rel)
+      mkdirSync(dirname(destino), { recursive: true })
+      writeFileSync(destino, datos)
+    }
+    console.log(`✓ ${mapa.size} archivos restaurados desde ${PAQUETES[id].archivo}${destinoOpcion ? ' en ' + base : ''}`)
   }
-  console.log(`✓ ${mapa.size} archivos restaurados desde contenido-cifrado/app.mfenc`)
 }
 
 /**
@@ -284,30 +350,32 @@ function cmdDescifrar(forzar) {
  *
  * El build de Mac compila con lo que está CIFRADO en el repo, no con el original.
  * Si alguien corrige algo y no vuelve a cifrar, Windows sale con el cambio y Mac
- * con la versión vieja, sin que nada lo avise. Por eso `build:win` corre esto
- * primero y corta. Compara el hash de cada original contra lo cifrado, en las dos
+ * con la versión vieja, sin que nada lo avise. Por eso se corre esto antes de
+ * subir. Compara el hash de cada original contra lo cifrado, en las dos
  * direcciones: archivos distintos, sobrantes y faltantes.
  */
 function cmdVerificar() {
   const k = clave()
-  const mapa = leerPaquete(k)
-  const originales = listarOriginales()
-  if (originales.length === 0) throw new Error('No hay archivos originales en esta carpeta: no hay nada que verificar.')
-  const problemas = []
-  for (const rel of originales) {
-    if (!mapa.has(rel)) problemas.push(`${rel} (no está en el cifrado)`)
-    else if (sha(readFileSync(join(ROOT, rel))) !== sha(mapa.get(rel))) problemas.push(`${rel} (cambió)`)
+  for (const id of Object.keys(PAQUETES)) {
+    const mapa = leerPaquete(id, k)
+    const originales = PAQUETES[id].listar()
+    if (originales.length === 0) throw new Error('No hay archivos originales en esta carpeta: no hay nada que verificar.')
+    const problemas = []
+    for (const rel of originales) {
+      if (!mapa.has(rel)) problemas.push(`${rel} (no está en el cifrado)`)
+      else if (sha(readFileSync(join(ROOT, rel))) !== sha(mapa.get(rel))) problemas.push(`${rel} (cambió)`)
+    }
+    for (const rel of mapa.keys()) {
+      if (!originales.includes(rel)) problemas.push(`${rel} (está cifrado pero ya no existe)`)
+    }
+    if (problemas.length > 0) {
+      throw new Error(
+        `El cifrado de ${PAQUETES[id].archivo} está desactualizado: ${problemas.slice(0, 5).join('; ')}` +
+          `${problemas.length > 5 ? '; …' : ''}. Corré "npm run contenido:cifrar".`
+      )
+    }
+    console.log(`✓ ${PAQUETES[id].archivo} está al día con los originales (${originales.length} archivos)`)
   }
-  for (const rel of mapa.keys()) {
-    if (!originales.includes(rel)) problemas.push(`${rel} (está cifrado pero ya no existe)`)
-  }
-  if (problemas.length > 0) {
-    throw new Error(
-      `El cifrado está desactualizado: ${problemas.slice(0, 5).join('; ')}${problemas.length > 5 ? '; …' : ''}. ` +
-        'Corré "npm run contenido:cifrar".'
-    )
-  }
-  console.log(`✓ el contenido cifrado está al día con los originales (${originales.length} archivos)`)
 }
 
 /*
@@ -341,20 +409,31 @@ function cmdAbrir(entrada, destino) {
   console.log(`✓ ${entrada} → ${destino}`)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const { claveArchivo, forzar, posicionales } = opciones(process.argv.slice(2))
+// ¿Se ejecutó este archivo directamente? Las dos rutas se comparan ya resueltas:
+// en macOS la carpeta temporal (/var/folders/...) es un enlace a /private/var/...
+// y, sin resolver el enlace, la comparación daba falso y el script salía sin hacer nada.
+const esPrincipal = (() => {
+  try {
+    return !!process.argv[1] && realpathSync(resolve(process.argv[1])) === realpathSync(fileURLToPath(import.meta.url))
+  } catch {
+    return false
+  }
+})()
+
+if (esPrincipal) {
+  const { claveArchivo, destino, forzar, posicionales } = opciones(process.argv.slice(2))
   claveArchivoOpcion = claveArchivo ? resolve(claveArchivo) : null
   const [cmd, a, b] = posicionales
   try {
     if (cmd === 'generar-clave') cmdGenerarClave(a)
     else if (cmd === 'cifrar') cmdCifrar()
-    else if (cmd === 'descifrar') cmdDescifrar(forzar)
+    else if (cmd === 'descifrar') cmdDescifrar(forzar, destino)
     else if (cmd === 'verificar') cmdVerificar()
     else if (cmd === 'sellar') cmdSellar(a, b)
     else if (cmd === 'abrir') cmdAbrir(a, b)
     else {
       throw new Error(
-        'Comandos: generar-clave <archivo> | cifrar | descifrar [--forzar] | verificar | sellar <entrada> <salida> | abrir <entrada> <destino>  (opción: --clave-archivo <ruta>)'
+        'Comandos: generar-clave [archivo] | cifrar | descifrar [--forzar] [--destino <carpeta>] | verificar | sellar <entrada> <salida> | abrir <entrada> <destino>  (opción: --clave-archivo <ruta>)'
       )
     }
   } catch (e) {

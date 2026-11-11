@@ -29,7 +29,7 @@
       validación de librerías exige que todo lo que carga un proceso esté firmado
       con el MISMO Team ID o sea de Apple. La plantilla por defecto de
       electron-builder (templates/entitlements.mac.plist) y la de
-      @electron/osx-sign la incluyen por esa razón, y el build de Mediflashy,
+      @electron/osx-sign la incluyen por esa razón, y un build anterior del mismo flujo,
       que ya se firmó y notarizó, también. Sin una Mac para probar el primer
       arranque, es preferible el valor probado: si faltara, el síntoma sería
       "library load disallowed" en la Mac del comprador y no un error de

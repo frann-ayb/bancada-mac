@@ -63,6 +63,17 @@ jobs:
         with:
           node-version: 22
 
+      # El nombre del .app, el identificador y el macOS mínimo salen de package.json
+      # y no se repiten a mano en cada paso: si cambian allá, esta prueba los sigue.
+      - name: Datos del producto
+        run: |
+          set -e
+          {
+            echo "APP_NAME=$(node -p "require('./package.json').productName")"
+            echo "APP_ID=$(node -p "require('./package.json').build.appId")"
+            echo "APP_MINMAC=$(node -p "require('./package.json').build.mac.minimumSystemVersion")"
+          } >> "$GITHUB_ENV"
+
       - name: Buscar la corrida que dejó el artefacto
         id: corrida
         env:
@@ -116,16 +127,16 @@ jobs:
           echo "Usando: $DMG"
 
           hdiutil attach "$DMG" -nobrowse -quiet -mountpoint /Volumes/PruebaBancada
-          ditto "/Volumes/PruebaBancada/Bancada.app" "/Applications/Bancada.app"
+          ditto "/Volumes/PruebaBancada/$APP_NAME.app" "/Applications/$APP_NAME.app"
           hdiutil detach /Volumes/PruebaBancada -quiet
           echo "Instalada en /Applications."
 
           # Exactamente lo que le pone el navegador a un archivo bajado. Sin
           # esto Gatekeeper ni se entera y la prueba no valdría nada. El -r
           # es para que la marca llegue también al contenido del bundle.
-          xattr -w -r com.apple.quarantine "0083;00000000;Safari;" "/Applications/Bancada.app"
+          xattr -w -r com.apple.quarantine "0083;00000000;Safari;" "/Applications/$APP_NAME.app"
           echo "Cuarentena aplicada:"
-          xattr -p com.apple.quarantine "/Applications/Bancada.app/Contents/MacOS/Bancada"
+          xattr -p com.apple.quarantine "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME"
 
       # ---------------------------------------------------------------------
       # CORTA. Es la prueba de que la certificación sirve para algo.
@@ -133,7 +144,7 @@ jobs:
       - name: Gatekeeper tiene que ACEPTAR la app
         run: |
           set -e
-          APP="/Applications/Bancada.app"
+          APP="/Applications/$APP_NAME.app"
           # El repo es público: el log no puede mostrar el nombre legal ni el
           # Team ID de la firma. Los grep -q de abajo corren sobre la salida
           # sin filtrar; sólo lo que se IMPRIME pasa por acá.
@@ -172,9 +183,9 @@ jobs:
       - name: Los entitlements tienen que estar
         run: |
           set -e
-          APP="/Applications/Bancada.app"
+          APP="/Applications/$APP_NAME.app"
           MAL=0
-          for B in "$APP" "$APP/Contents/Frameworks/Bancada Helper (Renderer).app"; do
+          for B in "$APP" "$APP/Contents/Frameworks/$APP_NAME Helper (Renderer).app"; do
             if [ ! -d "$B" ]; then echo "FALLA: no existe $B"; MAL=1; continue; fi
             E=$(codesign -d --entitlements :- "$B" 2>/dev/null || true)
             for K in com.apple.security.cs.allow-jit com.apple.security.cs.allow-unsigned-executable-memory; do
@@ -192,14 +203,14 @@ jobs:
       - name: El Info.plist declara lo que promete
         run: |
           set -e
-          APP="/Applications/Bancada.app"
+          APP="/Applications/$APP_NAME.app"
           PLIST="$APP/Contents/Info.plist"
           plutil -p "$PLIST" | grep -E 'CFBundleIdentifier|CFBundleShortVersionString|LSMinimumSystemVersion|LSApplicationCategoryType|CFBundleName'
           MAL=0
-          [ "$(plutil -extract CFBundleIdentifier raw "$PLIST")" = "ar.com.francoherrera.bancada" ] \
+          [ "$(plutil -extract CFBundleIdentifier raw "$PLIST")" = "$APP_ID" ] \
             || { echo "FALLA: CFBundleIdentifier"; MAL=1; }
-          [ "$(plutil -extract LSMinimumSystemVersion raw "$PLIST")" = "12.0" ] \
-            || { echo "FALLA: LSMinimumSystemVersion no es 12.0"; MAL=1; }
+          [ "$(plutil -extract LSMinimumSystemVersion raw "$PLIST")" = "$APP_MINMAC" ] \
+            || { echo "FALLA: LSMinimumSystemVersion no es $APP_MINMAC"; MAL=1; }
           VERSION=$(node -p "require('./package.json').version")
           [ "$(plutil -extract CFBundleShortVersionString raw "$PLIST")" = "$VERSION" ] \
             || { echo "FALLA: la versión del .app no es la de package.json ($VERSION)"; MAL=1; }
@@ -230,20 +241,24 @@ jobs:
         timeout-minutes: 5
         run: |
           set -e
-          DATOS="$HOME/Library/Application Support/Bancada"
+          DATOS="$HOME/Library/Application Support/$APP_NAME"
           rm -rf "$DATOS"
           VERSION=$(node -p "require('./package.json').version")
 
           # La sonda se evalúa dentro de la ventana cuando termina de cargar.
-          # Mira la plataforma que ve el preload y la que puso el documento, que
-          # la pantalla de arranque ya se haya ido, que la app esté montada, la
-          # versión que informa el proceso principal y que el almacén escriba.
-          SONDA='(async()=>({plat:window.bancada.plataforma,dp:document.documentElement.dataset.plataforma||null,ver:await window.bancada.sys.version(),arranque:!document.getElementById("arranque"),app:!!window.__app,inicial:await window.bancada.proyecto.archivoInicial(),guardo:await window.bancada.store.guardar("sonda.json",{ok:1})}))()'
+          # Mira la edición y el idioma con los que arrancó, que la pantalla de
+          # arranque ya se haya ido, que la app esté montada, la versión que informa
+          # el proceso principal y que el almacén escriba. También comprueba que la
+          # rama de Mac de la interfaz esté activa de verdad: la plataforma que informa
+          # el preload (`pm`), la marca del documento (`dp`) y los 84 px que la barra
+          # de título le deja a los semáforos (`pad`). Si alguna falta, la app saldría
+          # con atajos de Ctrl y la marca pisada por los semáforos, y eso corta.
+          SONDA='(async()=>({ed:window.bancada.arranque.edicion,idioma:window.bancada.arranque.idioma,dp:document.documentElement.dataset.plataforma||null,pm:window.bancada.plataforma,pad:getComputedStyle(document.querySelector(".titlebar")).paddingLeft,ver:await window.bancada.sys.version(),arranque:!document.getElementById("arranque"),app:!!window.__app,inicial:await window.bancada.proyecto.archivoInicial(),guardo:await window.bancada.store.guardar("retazos-usados.json",{ok:1})}))()'
 
           # Las redirecciones no son adorno: el proceso queda vivo a propósito y
           # heredaría las tuberías del paso, que el runner espera que se cierren.
           BANCADA_DEBUG=1 BANCADA_SONDA_MS=5000 BANCADA_SONDA="$SONDA" \
-            "/Applications/Bancada.app/Contents/MacOS/Bancada" \
+            "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME" \
             </dev/null > "$RUNNER_TEMP/app.log" 2>&1 &
           APP_PID=$!
 
@@ -269,30 +284,40 @@ jobs:
           for MARCA in 'RENDERER CAIDO' 'CARGA FALLIDA' '\[ERROR\]' 'SONDA ERROR'; do
             if grep -q "$MARCA" "$RUNNER_TEMP/app.log"; then echo "FALLA: aparece $MARCA en el registro."; MAL=1; fi
           done
-          grep -q '"plat": "darwin"' "$RUNNER_TEMP/app.log" || { echo "FALLA: el preload no informa darwin."; MAL=1; }
+          grep -q '"ed": "ar"' "$RUNNER_TEMP/app.log" || { echo "FALLA: la edición con la que arrancó no es la argentina."; MAL=1; }
+          grep -q '"idioma": "es-AR"' "$RUNNER_TEMP/app.log" || { echo "FALLA: el idioma con el que arrancó no es es-AR."; MAL=1; }
+          grep -q '"pm": "darwin"' "$RUNNER_TEMP/app.log" || { echo "FALLA: el preload no informa la plataforma darwin."; MAL=1; }
           grep -q '"dp": "darwin"' "$RUNNER_TEMP/app.log" || { echo "FALLA: el documento no quedó marcado como darwin."; MAL=1; }
+          grep -q '"pad": "84px"' "$RUNNER_TEMP/app.log" || { echo "FALLA: la barra de título no deja el lugar de los semáforos (84 px)."; MAL=1; }
           grep -q '"arranque": true' "$RUNNER_TEMP/app.log" || { echo "FALLA: la pantalla de arranque no se fue."; MAL=1; }
           grep -q '"app": true' "$RUNNER_TEMP/app.log" || { echo "FALLA: la app no se montó."; MAL=1; }
           grep -q "\"ver\": \"$VERSION\"" "$RUNNER_TEMP/app.log" || { echo "FALLA: la versión no es $VERSION."; MAL=1; }
-          [ -f "$DATOS/sonda.json" ] || { echo "FALLA: no escribió en $DATOS"; MAL=1; }
+          [ -f "$DATOS/retazos-usados.json" ] || { echo "FALLA: no escribió en la carpeta de datos de $APP_NAME"; MAL=1; }
           [ "$MAL" = 0 ] || exit 1
           echo ""
           echo "OK: arrancó con la cuarentena puesta, cargó la interfaz y escribió sus datos."
 
       # Cubre el camino empaquetado de "abrir con": el programa recibe la ruta
-      # por argumento y se la devuelve a la pantalla. El doble clic real del
-      # Finder (evento open-file) lo cubre el flujo 9 de pruebas-mac.yml.
+      # por argumento y la pantalla la abre. El doble clic real del Finder (evento
+      # open-file) lo cubren las pruebas unitarias de main.js (main-mac.test.mjs); un
+      # recorrido con la ventana de verdad no corre en este proyecto.
+      #
+      # La sonda NO le pide el archivo a la app con `archivoInicial()`: ese canal se
+      # entrega una sola vez (si no, cada ventana nueva o recarga reabriría el mismo
+      # trabajo) y la pantalla ya lo consumió al arrancar, así que la sonda recibiría
+      # `null`. Se mira, en cambio, `rutaActual()`, que devuelve el archivo que la
+      # pantalla terminó abriendo, y se espera a que aparezca.
       - name: Un .bancada pasado por argumento llega a la app
         timeout-minutes: 5
         run: |
           set -e
           ARCHIVO="$RUNNER_TEMP/Prueba.bancada"
           printf '{"nombre":"Prueba de arranque","piezas":[],"modulos":[]}' > "$ARCHIVO"
-          SONDA='(async()=>({inicial:await window.bancada.proyecto.archivoInicial()}))()'
+          SONDA='(async()=>{let r=null;for(let i=0;i<40&&!r;i++){r=await window.bancada.proyecto.rutaActual();if(!r)await new Promise(x=>setTimeout(x,500));}return {abierto:r};})()'
           rm -f "$RUNNER_TEMP/app2.log"
 
           BANCADA_DEBUG=1 BANCADA_SONDA_MS=5000 BANCADA_SONDA="$SONDA" \
-            "/Applications/Bancada.app/Contents/MacOS/Bancada" "$ARCHIVO" \
+            "/Applications/$APP_NAME.app/Contents/MacOS/$APP_NAME" "$ARCHIVO" \
             </dev/null > "$RUNNER_TEMP/app2.log" 2>&1 &
           APP_PID=$!
           for i in $(seq 1 45); do
@@ -302,7 +327,7 @@ jobs:
           done
           kill $APP_PID 2>/dev/null || true
           sed -n '/\[SONDA/,$p' "$RUNNER_TEMP/app2.log"
-          grep -q "Prueba.bancada" "$RUNNER_TEMP/app2.log" \
+          grep -q '"abierto": ".*Prueba.bancada"' "$RUNNER_TEMP/app2.log" \
             || { echo "FALLA: la ruta del archivo no llegó a la pantalla."; exit 1; }
           echo "OK: el archivo llegó."
 
@@ -313,11 +338,11 @@ jobs:
         timeout-minutes: 2
         run: |
           set +e
-          ( open -g -a "/Applications/Bancada.app" ) &
+          ( open -g -a "/Applications/$APP_NAME.app" ) &
           sleep 15
-          if pgrep -x Bancada >/dev/null; then
+          if pgrep -x "$APP_NAME" >/dev/null; then
             echo "OK: LaunchServices la abrió."
-            pkill -x Bancada
+            pkill -x "$APP_NAME"
           else
             echo "Sin respuesta de LaunchServices en este runner (no es falla del producto)."
           fi
@@ -327,7 +352,7 @@ jobs:
       - name: Nada depende de Homebrew
         run: |
           set -e
-          APP="/Applications/Bancada.app"
+          APP="/Applications/$APP_NAME.app"
           MAL=0
           while IFS= read -r F; do
             if otool -L "$F" 2>/dev/null | tail -n +2 | grep -Eq '/opt/homebrew|/usr/local/(lib|opt)'; then
@@ -347,7 +372,7 @@ jobs:
           echo "Usando: $DMG"
 
           hdiutil attach "$DMG" -nobrowse -quiet -mountpoint /Volumes/PruebaBancadaX64
-          APP="/Volumes/PruebaBancadaX64/Bancada.app"
+          APP="/Volumes/PruebaBancadaX64/$APP_NAME.app"
           # El repo es público: el log no puede mostrar el nombre legal ni el
           # Team ID de la firma. Los grep -q de abajo corren sobre la salida
           # sin filtrar; sólo lo que se IMPRIME pasa por acá.
@@ -366,7 +391,7 @@ jobs:
             || { hdiutil detach /Volumes/PruebaBancadaX64 -quiet; echo "FALLA: rechazada."; exit 1; }
           echo ""
           echo "=== su ejecutable es x86_64 ==="
-          ARCHS=$(lipo -archs "$APP/Contents/MacOS/Bancada")
+          ARCHS=$(lipo -archs "$APP/Contents/MacOS/$APP_NAME")
           echo "$ARCHS"
           hdiutil detach /Volumes/PruebaBancadaX64 -quiet
           echo "$ARCHS" | grep -q x86_64 || { echo "FALLA: no es x86_64."; exit 1; }

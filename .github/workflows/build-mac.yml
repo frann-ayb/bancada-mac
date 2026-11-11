@@ -1,5 +1,5 @@
-# Compila, FIRMA con Developer ID y NOTARIZA los dos .dmg de macOS de Bancada en
-# un runner de GitHub.
+# Compila, FIRMA con Developer ID y NOTARIZA los dos .dmg de macOS de Bancada
+# (edición Argentina, Bancada 2.0) en un runner de GitHub.
 #
 # Existe para poder certificar la versión de Mac sin tener una Mac. El runner trae
 # Xcode, y con él codesign, notarytool y stapler.
@@ -10,7 +10,8 @@
 #   · que Apple los haya notarizado y que el ticket quede PEGADO al bundle
 #   · que Gatekeeper los acepte, en las dos arquitecturas
 #   · que el código viaje en el paquete y que no viajen pruebas ni trabajos
-#   · que pasen las pruebas unitarias, con la rama de Mac de main.js incluida
+#   · que pasen las pruebas unitarias que corren sin pantalla (las que cuentan con
+#     la lista cifrada pruebas/ci-lista.json)
 #
 # QUÉ NO REEMPLAZA: usar la app en una Mac de verdad. Que Gatekeeper la acepte no
 # prueba que la ventana abra bien ni que los semáforos queden donde corresponde.
@@ -18,8 +19,9 @@
 #
 # EL REPO ES PÚBLICO (sólo los públicos tienen minutos de macOS sin límite), así
 # que el código del producto NO está en claro: vive en contenido-cifrado/app.mfenc
-# y se descifra acá con el secret BANCADA_CONTENIDO_KEY. Por la misma razón los
-# .dmg se suben SELLADOS: un .dmg suelto en un repo público es la app regalada.
+# (y las pruebas, en contenido-cifrado/pruebas.mfenc) y se descifra acá con el
+# secret BANCADA_CONTENIDO_KEY. Por la misma razón los .dmg se suben SELLADOS: un
+# .dmg suelto en un repo público es la app regalada.
 name: Compilar para Mac
 
 on:
@@ -27,6 +29,10 @@ on:
     inputs:
       armar_entrega:
         description: 'Armar la carpeta de entrega con los nombres que ve el comprador (si no, sube los .dmg de prueba)'
+        type: boolean
+        default: false
+      omitir_pruebas:
+        description: 'Saltear las pruebas unitarias (sólo para destrabar una corrida si una prueba falla por ser de Windows; las pruebas son el primer corte antes de notarizar)'
         type: boolean
         default: false
 
@@ -48,7 +54,9 @@ jobs:
     # firma y notariza. El .p12 con algoritmos legacy (PBE-SHA1-3DES) se lee igual
     # en macos-15.
     runs-on: macos-15
-    timeout-minutes: 60
+    # Con armar_entrega=true se repiten las pruebas, se compila y se notariza dos
+    # veces (una por arquitectura): 60 minutos quedaba justo con un runner o un Apple lentos.
+    timeout-minutes: 90
 
     steps:
       - uses: actions/checkout@v4
@@ -115,14 +123,21 @@ jobs:
             exit 1
           fi
 
-          if grep -qE 'TODO|COMPLETAR' package.json; then
-            echo "package.json tiene marcadores sin completar:"
-            grep -nE 'TODO|COMPLETAR' package.json
+          if [ ! -f contenido-cifrado/app.mfenc ]; then
+            echo "Falta contenido-cifrado/app.mfenc: sin el código cifrado no hay nada que compilar."
+            exit 1
+          fi
+          if [ ! -f contenido-cifrado/pruebas.mfenc ]; then
+            echo "Falta contenido-cifrado/pruebas.mfenc: sin las pruebas cifradas no hay primer corte."
             exit 1
           fi
 
-          if [ ! -f contenido-cifrado/app.mfenc ]; then
-            echo "Falta contenido-cifrado/app.mfenc: sin el código cifrado no hay nada que compilar."
+          # La edición del paquete es la argentina: si alguien cambia el nombre del
+          # producto o el identificador sin darse cuenta, se corta antes de compilar.
+          if [ "$(node -p "require('./package.json').build.appId")" != "com.bancada.desktop" ] \
+            || [ "$(node -p "require('./package.json').productName")" != "Bancada" ] \
+            || [ "$(node -p "require('./package.json').bancada.edicion")" != "ar" ]; then
+            echo "package.json no es el de la edición argentina (appId, productName o bancada.edicion)."
             exit 1
           fi
 
@@ -135,7 +150,7 @@ jobs:
               exit 1
             fi
           done
-          expuestos=$(git ls-files -- src pruebas .guia-mac '*password*' '*.p12' '*.key' '*.b64' '*.pfx' '*.dmg' '*.exe')
+          expuestos=$(git ls-files -- src pruebas docs editor-fuente pro-fuente CONTRATOS.md LEEME.md .guia-mac 'Entrega Mac' '*password*' '*.p12' '*.key' '*.b64' '*.pfx' '*.dmg' '*.exe')
           if [ -n "$expuestos" ]; then
             echo "FALLA: hay archivos en el repositorio que no tienen que estar a la vista:"
             echo "$expuestos" | head -10
@@ -177,37 +192,21 @@ jobs:
       - name: Bajar Electron para las dos arquitecturas, con reintentos
         run: node scripts/precalentar-electron.mjs
 
-      # Corre las pruebas unitarias en macOS de verdad: main.test.mjs ejecuta
-      # main.js con process.platform === 'darwin', o sea que prueba la rama de Mac.
-      # Cuestan menos de un minuto y evitan notarizar algo que ya se sabía roto.
+      # Corre en macOS las pruebas unitarias que no necesitan pantalla ni Windows.
+      # La lista está en pruebas/ci-lista.json (cifrada, como todo lo que revela
+      # algo del producto) y la recorre scripts/correr-pruebas-ci.mjs. Cuestan unos
+      # minutos y evitan notarizar algo que ya se sabía roto.
       #
-      # El repositorio es público y el log lo lee cualquiera: `npm test` vuelca
-      # unas 1.600 líneas con reglas de negocio (aprovechamientos, tablas de
-      # presupuesto, rutas del código). Por eso cada prueba va a su archivo, en el
-      # log sale un renglón por prueba, y el detalle viaja dentro del artefacto
-      # sellado (build de prueba).
+      # El repositorio es público y el log lo lee cualquiera: la salida completa de
+      # las pruebas repite reglas de negocio (aprovechamientos, tablas de
+      # presupuesto, rutas del código). Por eso el corredor manda cada prueba a su
+      # archivo, en el log sale un renglón por prueba con un número (no con su
+      # nombre) y el detalle viaja dentro del artefacto sellado.
       - name: Pruebas unitarias
-        run: |
-          mkdir -p "$RUNNER_TEMP/logs-unitarios"
-          FALLO=0
-          for T in pruebas/*.test.mjs; do
-            N=$(basename "$T" .test.mjs)
-            LOG="$RUNNER_TEMP/logs-unitarios/$N.log"
-            set +e
-            node --no-warnings "$T" > "$LOG" 2>&1
-            C=$?
-            set -e
-            [ "$C" = 0 ] || FALLO=1
-            # Sólo el resultado: la última línea de cada prueba trae el conteo.
-            echo "$N exit=$C | $(tail -n 1 "$LOG" | cut -c1-110)"
-            if [ "$C" != 0 ]; then
-              # Sólo el nombre de la prueba que falló y su mensaje, o el tipo de
-              # error si el proceso se cayó: nunca un renglón del código.
-              grep -E -A1 '^  FALLA ' "$LOG" | cut -c1-200 | head -n 24 || true
-              grep -E '^[A-Za-z]*Error[ :[]' "$LOG" | cut -c1-200 | head -n 6 || true
-            fi
-          done
-          exit $FALLO
+        if: ${{ !inputs.omitir_pruebas }}
+        env:
+          BANCADA_LOGS_PRUEBAS: ${{ runner.temp }}/logs-unitarios
+        run: node --no-warnings scripts/correr-pruebas-ci.mjs
 
       - name: Compilar, firmar y notarizar los .dmg
         # No hace falta armar ningún llavero a mano: createKeychain() de
@@ -245,10 +244,13 @@ jobs:
       # que pedirle el log. Es el único lugar donde figura el binario exacto y el
       # motivo ("does not have the hardened runtime enabled", por ejemplo).
       #
-      # El historial de notarytool es el de TODA la cuenta de Apple, que es la
-      # misma de los otros productos: en un log público no se imprime. Se lo lee
+      # El historial de notarytool es el de TODA la cuenta de Apple, que puede tener
+      # más envíos que los de este producto: en un log público no se imprime. Se lo lee
       # en silencio y sólo se toma el id del envío más reciente cuyo archivo se
-      # llama Bancada; lo único que sale al log es el detalle de ESE envío.
+      # llama «Bancada» (el .app que sube electron-builder lleva el productName). El
+      # filtro empieza en «bancada» y descarta los nombres que siguen con «it»
+      # (otro producto de la misma cuenta de Apple), para que su detalle no salga
+      # en este log. Lo único que sale al log es el detalle de ESE envío.
       - name: Si Apple rechazó el envío, pedirle el detalle
         if: failure()
         env:
@@ -262,7 +264,7 @@ jobs:
             try {
               const h = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
               const mios = (h.history || [])
-                .filter((e) => /bancada/i.test(e.name || ""))
+                .filter((e) => /^bancada(?![ _-]?it)/i.test(e.name || ""))
                 .sort((a, b) => String(b.createdDate).localeCompare(String(a.createdDate)));
               if (mios.length) process.stdout.write(String(mios[0].id));
             } catch {}
@@ -368,3 +370,30 @@ jobs:
           path: sellado/bancada-mac-entrega.mfenc
           if-no-files-found: error
           retention-days: 30
+
+      # Si algo falló antes de llegar a los pasos de arriba (una prueba, el build, la
+      # notarización), el detalle completo está en archivos del runner y el log público
+      # sólo dice qué paso cayó. Esto los sella y los sube para poder leerlos en la
+      # máquina de desarrollo con `node scripts/contenido-cifrado.mjs abrir`.
+      # Es de mejor esfuerzo: si faltó la clave, no hay nada que sellar y no se agrega
+      # otro error encima del que ya hay.
+      - name: Sellar los registros de la falla
+        if: failure()
+        env:
+          BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
+        run: |
+          set +e
+          mkdir -p registros-falla sellado
+          cp "$RUNNER_TEMP/build-mac.log" registros-falla/ 2>/dev/null
+          cp -R "$RUNNER_TEMP/logs-unitarios" registros-falla/ 2>/dev/null
+          node scripts/contenido-cifrado.mjs sellar registros-falla sellado/bancada-mac-registros-falla.mfenc || true
+          exit 0
+
+      - name: Subir los registros sellados de la falla
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bancada-mac-registros-falla
+          path: sellado/bancada-mac-registros-falla.mfenc
+          if-no-files-found: ignore
+          retention-days: 7

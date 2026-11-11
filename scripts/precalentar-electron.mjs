@@ -13,9 +13,9 @@
  * ---------------------------------------------------------------------------
  *
  * electron-builder baja esos archivos de los releases de GitHub, una vez por
- * arquitectura, y un "504 Gateway Time-out" del CDN corta todo. En Mediflashy pasó
- * dos veces seguidas, la segunda DESPUÉS de haber firmado y notarizado el .app de
- * Apple Silicon: se tiró trabajo hecho.
+ * arquitectura, y un "504 Gateway Time-out" del CDN corta todo. Ya pasó en otro
+ * producto de este flujo, dos veces seguidas, la segunda DESPUÉS de haber firmado
+ * y notarizado el .app de Apple Silicon: se tiró trabajo hecho.
  *
  * electron-builder usa @electron/get con su caché por defecto, y si el zip ya está
  * ahí no sale a la red. Este script lo pone ahí con el mismo @electron/get y la

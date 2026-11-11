@@ -13,7 +13,9 @@
  * por un reclamo. Este script es el corte que electron-builder no hace.
  *
  * Además de la firma, mira lo que se puede romper sin que nadie se entere:
- *   · el Info.plist (identificador, macOS mínimo, la asociación de .bancada)
+ *   · el Info.plist (identificador, macOS mínimo, la asociación de .bancada, el tipo
+ *     de documento propio y los permisos de carpetas)
+ *   · que el app.asar sea la edición esperada (productName e idioma del package.json)
  *   · que los iconos estén (sin ellos electron-builder usa el de Electron, en verde)
  *   · que el código viaje en el app.asar y que NO viajen pruebas ni trabajos
  *   · los entitlements efectivos (si falta allow-jit la app abre en blanco)
@@ -219,6 +221,16 @@ function listarAsar(archivo) {
   }
 }
 
+/** Contenido de un archivo del app.asar como texto; o null si no se pudo leer. */
+function leerDelAsar(archivo, interno) {
+  try {
+    const asar = createRequire(join(ROOT, 'package.json'))('@electron/asar')
+    return asar.extractFile(archivo, interno).toString('utf8')
+  } catch {
+    return null
+  }
+}
+
 /* ------------------------------- recorrida ------------------------------- */
 
 for (const app of bundles) {
@@ -291,6 +303,21 @@ for (const app of bundles) {
       'la app: exporta el tipo de documento de Bancada (UTExportedTypeDeclarations)',
       `UTExportedTypeDeclarations: ${JSON.stringify(uti).slice(0, 200)}`
     )
+    // El tipo propio tiene que ser el de la edición (no el de otra edición).
+    const utiEsperado = (PKG.build.mac.extendInfo?.UTExportedTypeDeclarations ?? [])[0]?.UTTypeIdentifier
+    check(
+      Boolean(utiEsperado) && uti.some((u) => u.UTTypeIdentifier === utiEsperado),
+      `la app: el tipo de documento es ${utiEsperado}`,
+      `UTExportedTypeDeclarations: ${JSON.stringify(uti).slice(0, 200)}`
+    )
+    // Los permisos que macOS le muestra al comprador, en el idioma de la edición.
+    for (const k of ['NSDocumentsFolderUsageDescription', 'NSDesktopFolderUsageDescription', 'NSDownloadsFolderUsageDescription']) {
+      check(
+        typeof info[k] === 'string' && info[k].length > 0 && info[k] === PKG.build.mac.extendInfo?.[k],
+        `la app: declara ${k}`,
+        `vale ${JSON.stringify(info[k])}`
+      )
+    }
   }
 
   // Iconos: si falta uno, electron-builder usa el de Electron y el build sale en verde.
@@ -311,9 +338,33 @@ for (const app of bundles) {
         check(lista.includes(f), `app.asar: trae ${f}`, 'el código del producto no llegó al paquete: ¿corrió "descifrar" antes del build?')
       }
       const sobrantes = lista.filter(
-        (p) => /\.test\.mjs$/.test(p) || /\.bancada$/.test(p) || p.startsWith('pruebas/') || p.startsWith('contenido-cifrado/')
+        (p) =>
+          /\.test\.mjs$/.test(p) ||
+          /\.bancada$/.test(p) ||
+          p.startsWith('pruebas/') ||
+          p.startsWith('contenido-cifrado/') ||
+          p.startsWith('src/i18n/claves/') ||
+          p.startsWith('src/i18n/permitidos/')
       )
-      check(sobrantes.length === 0, 'app.asar: no trae pruebas ni trabajos de ejemplo', sobrantes.slice(0, 5).join(', '))
+      check(sobrantes.length === 0, 'app.asar: no trae pruebas, trabajos de ejemplo ni inventarios de textos', sobrantes.slice(0, 5).join(', '))
+
+      // El programa empaquetado tiene que ser la edición esperada: su package.json lo dice.
+      let meta = null
+      try {
+        meta = JSON.parse(leerDelAsar(asarPath, 'package.json') ?? '')
+      } catch {
+        /* se informa abajo */
+      }
+      check(
+        meta?.productName === PKG.productName && meta?.bancada?.edicion === PKG.bancada.edicion && meta?.bancada?.idioma === PKG.bancada.idioma,
+        `app.asar: el package.json de adentro es la edición ${PKG.bancada.edicion} (${PKG.bancada.idioma}) de ${PKG.productName}`,
+        `productName=${meta?.productName} bancada=${JSON.stringify(meta?.bancada)}`
+      )
+      check(
+        !('scripts' in (meta ?? {})) && !('devDependencies' in (meta ?? {})),
+        'app.asar: el package.json de adentro no trae scripts ni devDependencies',
+        `claves: ${Object.keys(meta ?? {}).join(', ')}`
+      )
     }
   }
 

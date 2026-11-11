@@ -1,18 +1,14 @@
 {
   "name": "bancada",
   "productName": "Bancada",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "Optimizador de cortes y diseño de muebles para carpinteros y herreros",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "icono": "electron pruebas/hacer-icono.js",
-    "dist": "electron-builder --win --x64",
-    "instalador": "electron-builder --win nsis --x64",
-    "portable": "electron-builder --win portable --x64",
-    "sin-empaquetar": "electron-builder --win --x64 --dir",
-    "build:win": "npm run contenido:verificar && npm run dist",
-    "test": "node pruebas/ambiente.test.mjs && node pruebas/armado.test.mjs && node pruebas/despiece.test.mjs && node pruebas/main.test.mjs && node pruebas/parser.test.mjs && node pruebas/plantillas.test.mjs && node pruebas/presupuesto-ui.test.mjs && node pruebas/presupuesto.test.mjs && node pruebas/solver1d.test.mjs && node pruebas/solver2d.test.mjs && node pruebas/pro-catalogo.test.mjs && node pruebas/pro-licencia.test.mjs && node pruebas/pro-ui.test.mjs && node pruebas/pro-3d.test.mjs",
+    "test": "node --no-warnings scripts/correr-pruebas-ci.mjs",
+    "test:empaquetado": "node --no-warnings scripts/correr-pruebas-ci.mjs empaquetado",
+    "contenido:generar-clave": "node scripts/contenido-cifrado.mjs generar-clave",
     "contenido:cifrar": "node scripts/contenido-cifrado.mjs cifrar",
     "contenido:descifrar": "node scripts/contenido-cifrado.mjs descifrar",
     "contenido:verificar": "node scripts/contenido-cifrado.mjs verificar",
@@ -26,12 +22,18 @@
     "name": "Bancada"
   },
   "license": "UNLICENSED",
+  "bancada": {
+    "edicion": "ar",
+    "idioma": "es-AR",
+    "region": "es-AR",
+    "carpetaDatosPortable": "Datos Bancada"
+  },
   "devDependencies": {
     "electron": "^43.7.4",
     "electron-builder": "^26.15.3"
   },
   "build": {
-    "appId": "ar.com.francoherrera.bancada",
+    "appId": "com.bancada.desktop",
     "productName": "Bancada",
     "copyright": "© 2026 Bancada",
     "directories": {
@@ -50,51 +52,19 @@
       "!**/*.ps1",
       "!**/*.test.mjs",
       "!**/*.bancada",
-      "!**/*.map"
+      "!**/*.map",
+      "!src/i18n/claves/**",
+      "!src/i18n/permitidos/**"
     ],
     "fileAssociations": [
       {
         "ext": "bancada",
         "name": "Bancada.Trabajo",
         "description": "Trabajo de Bancada",
-        "icon": "archivo.ico",
+        "icon": "archivo.icns",
         "role": "Editor"
       }
     ],
-    "win": {
-      "icon": "build/icon.ico",
-      "target": [
-        { "target": "nsis", "arch": ["x64"] },
-        { "target": "portable", "arch": ["x64"] }
-      ],
-      "legalTrademarks": "Bancada",
-      "signAndEditExecutable": true
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowElevation": true,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "Bancada",
-      "menuCategory": false,
-      "runAfterFinish": true,
-      "deleteAppDataOnUninstall": false,
-      "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico",
-      "installerHeaderIcon": "build/icon.ico",
-      "uninstallDisplayName": "Bancada ${version}",
-      "artifactName": "Bancada-${version}-instalador.${ext}",
-      "include": "instalador.nsh",
-      "language": "3082",
-      "displayLanguageSelector": false
-    },
-    "portable": {
-      "artifactName": "Bancada-${version}-portable.${ext}",
-      "unicode": true,
-      "requestExecutionLevel": "user"
-    },
     "mac": {
       "target": [
         { "target": "dmg", "arch": ["arm64", "x64"] }
@@ -115,7 +85,7 @@
         "NSDownloadsFolderUsageDescription": "Bancada solo abre y guarda los trabajos y los PDF que vos elegís. Nada de lo que abrís se envía a ningún lado.",
         "UTExportedTypeDeclarations": [
           {
-            "UTTypeIdentifier": "ar.com.francoherrera.bancada.trabajo",
+            "UTTypeIdentifier": "com.bancada.desktop.trabajo",
             "UTTypeDescription": "Trabajo de Bancada",
             "UTTypeConformsTo": ["public.data"],
             "UTTypeIconFile": "archivo.icns",

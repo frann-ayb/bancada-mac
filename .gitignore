@@ -4,101 +4,150 @@
 #
 # Antes de agregar un archivo nuevo al repo, la pregunta es si te molestaría que
 # lo lea un desconocido. Un archivo que entra en el historial ya no sale.
+#
+# Cómo está armado: primero una LISTA BLANCA (se tapa todo y se destapa sólo lo que
+# tiene que estar), y al final una LISTA NEGRA que gana sobre la blanca (lo que
+# nunca debe subir, esté donde esté). Si aparece un archivo nuevo en la raíz, un
+# script nuevo en scripts/ o algo nuevo en build/, queda tapado hasta que se lo
+# destape a propósito.
 
-# ── lo que se vende ──────────────────────────────────────────────────────────
+# ── lista blanca ─────────────────────────────────────────────────────────────
+/*
+!/.github/
+!/.gitignore
+!/package.json
+!/package-lock.json
+!/build/
+!/scripts/
+!/contenido-cifrado/
+
+# build/: sólo lo que usa el empaquetado de Mac.
+/build/*
+!/build/entitlements.mac.plist
+!/build/entitlements.mac.inherit.plist
+!/build/icon.icns
+!/build/archivo.icns
+
+# scripts/: sólo los del flujo de Mac. Los demás (herramientas de desarrollo del
+# programa) nunca salen de la máquina de desarrollo.
+/scripts/*
+!/scripts/contenido-cifrado.mjs
+!/scripts/correr-pruebas-ci.mjs
+!/scripts/armar-entrega-mac.mjs
+!/scripts/verify-firma-mac.mjs
+!/scripts/precalentar-electron.mjs
+!/scripts/hacer-icono-mac.js
+
+# contenido-cifrado/: sólo los paquetes cifrados.
+/contenido-cifrado/*
+!/contenido-cifrado/app.mfenc
+!/contenido-cifrado/pruebas.mfenc
+!/contenido-cifrado/e2e.mfenc
+
+# ── lista negra (gana sobre la blanca) ───────────────────────────────────────
+
 # El código del producto viaja CIFRADO en contenido-cifrado/app.mfenc y el
 # workflow lo descifra con el secret BANCADA_CONTENIDO_KEY. Los originales no se
-# suben nunca. Ver scripts/contenido-cifrado.mjs.
-#
-# Cualquier archivo nuevo con código del producto va acá Y en la lista ENTRADAS
-# de ese script.
+# suben nunca. Ver scripts/contenido-cifrado.mjs. Cualquier archivo nuevo con
+# código del producto va acá Y en la lista de ese script.
 /main.js
 /preload.js
 /src/
 
-# Las pruebas importan las reglas de negocio del producto: viajan cifradas dentro
-# del mismo paquete (las unitarias) o se quedan en la máquina de desarrollo (e2e,
-# capturas, salidas).
+# Las pruebas importan las reglas de negocio del producto: viajan cifradas en
+# contenido-cifrado/pruebas.mfenc (las unitarias del runner) o se quedan en la
+# máquina de desarrollo (arneses con ventana, capturas, salidas).
 /pruebas/
 
-# ── secretos ─────────────────────────────────────────────────────────────────
-# El certificado y las claves viven fuera del proyecto (Escritorio, firma-apple),
-# pero si alguna vez se copian acá por comodidad, que no salgan.
+# Material de desarrollo y documentos internos: no viajan a este repositorio.
+/docs/
+/editor-fuente/
+/pro-fuente/
+/CONTRATOS.md
+/LEEME.md
+
+# Las guías de armado y de firma son para la máquina de desarrollo: cuentan cómo se
+# organiza el trabajo y qué cuentas intervienen, y a un lector externo no le sirven.
+/README.md
+/COMO FIRMAR EN MAC.md
+/scripts/pro-*
+/scripts/editor-*
+/scripts/lib/
+/scripts/orquestacion/
+/scripts/.manifiestos-ola/
+codigo-general*
+
+# Lo que se compila, se genera o se descarga.
+node_modules/
+dist/
+out/
+release/
+/Entrega Mac/
+/sellado/
+/bancada-mac-prueba/
+/registros-falla/
+/_artefactos/
+
+# La guía del comprador es contenido de la entrega paga: no va a la vista.
+/.guia-mac/
+
+# Ningún instalador ni ejecutable, esté donde esté: pesan más de 90 MB y GitHub
+# rechaza el push entero. Y subirlos sin sellar sería regalar la aplicación.
+*.dmg
+*.exe
+*.blockmap
+*.zip
+*.asar
+
+# Los trabajos de ejemplo y las capturas.
+*.bancada
+capturas/
+
+# Secretos. El certificado y las claves viven fuera del proyecto (Escritorio,
+# firma-apple), pero si alguna vez se copian acá por comodidad, que no salgan.
 *.p12
+*.pfx
 *.key
 *.cer
 *.pem
 *.b64
-*.env
-.env*
-p12-password*
-*.pfx
 *.p8
+*.csr
 *.certSigningRequest
 *.mobileprovision
 *.provisionprofile
 *.keychain
 *.keychain-db
-SECRETS*
-*credencial*
-firma-apple/
+*.keystore
+*.jks
 *.mfkey
-bancada-contenido.key
+*.env
+.env*
 .npmrc
 *password*
 *passwd*
 *secret*
 *token*
-*.csr
-*.keystore
-*.jks
+*credencial*
+SECRETS*
+firma-apple/
 id_rsa*
 id_ed25519*
 apple-app-specific-password*
 apple-id*
 clave*.txt
+bancada-contenido.key
 
-# ── lo que se compila o se genera ────────────────────────────────────────────
-node_modules/
-dist/
-out/
-release/
+# Respaldos y copias de trabajo.
+*.bak
+*.orig
+*.antes-de-*
+*~
+respaldo*/
+*respaldo*
 
-# Lo que arman los scripts y el workflow para subir como artefacto.
-/Entrega Mac/
-/sellado/
-/bancada-mac-prueba/
-
-# Ningún instalador, esté donde esté: pesan más de 90 MB y GitHub rechaza el push
-# entero. Y subirlos sin sellar sería regalar la aplicación.
-*.dmg
-*.exe
-*.blockmap
-
-# Los trabajos de ejemplo y las capturas de las guías.
-*.bancada
-capturas/
-/entrega/
-
-# La guía del comprador es contenido de la entrega paga: no va a la vista.
-/.guia-mac/
-
-# ── ruido del sistema ────────────────────────────────────────────────────────
+# Ruido del sistema.
 .DS_Store
 Thumbs.db
+desktop.ini
 *.log
-
-# artefactos descargados de las corridas
-/_artefactos/
-/Entrega Mac/
-
-# ── material de desarrollo que no viaja a este repositorio ───────────────────
-# Si alguno de estos se copiara por comodidad, que no salga.
-/pro-fuente/
-/docs/
-/CONTRATOS.md
-/LEEME.md
-/scripts/pro-*
-/scripts/lib/
-codigo-general*
-firma-pro/

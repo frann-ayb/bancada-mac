@@ -1,9 +1,11 @@
 # Corre las pruebas de Bancada en macOS, con la app de verdad.
 #
-# QUÉ HACE: descifra el código, corre los 14 tests unitarios en Node y después
-# el recorrido de punta a punta (pruebas/e2e.js) manejando la app real, con el
-# flujo 9 que sólo existe en macOS: abrir un .bancada con la app ya abierta o
-# sin ventana, el menú nativo, Cmd+tecla y el lugar de los semáforos.
+# QUÉ HACE: descifra el código, corre las pruebas unitarias de la lista cifrada
+# (pruebas/ci-lista.json) en Node y, si el recorrido de punta a punta
+# (pruebas/e2e.js) vino en su paquete aparte, lo corre manejando la app real. Hoy
+# ese paquete no existe en este proyecto, así que esta corrida valida solo las
+# unitarias; la comprobación de que la rama de Mac de la interfaz está activa (marca
+# de plataforma, lugar de los semáforos) la hace «Probar en Mac» sobre el .app firmado.
 #
 # POR QUÉ ASÍ:
 #   · El repo es PÚBLICO (por los minutos de macOS) y el código del producto no
@@ -31,7 +33,8 @@ jobs:
   probar:
     # macos-15 es Apple Silicon y tiene sesión gráfica: Electron puede abrir
     # ventana. Lo que NO está verificado es que el runner le dé foco a la
-    # ventana para teclas reales: el flujo 9 lo detecta y lo informa PARCIAL.
+    # ventana para teclas reales: solo importa si algún día se suma el recorrido de
+    # punta a punta (pruebas/e2e.js).
     runs-on: macos-15
     timeout-minutes: 40
 
@@ -58,20 +61,22 @@ jobs:
           BANCADA_CONTENIDO_KEY: ${{ secrets.BANCADA_CONTENIDO_KEY }}
         run: |
           set -e
+          # Descifra los dos paquetes: el código (app.mfenc) y las pruebas unitarias
+          # (pruebas.mfenc, con su lista pruebas/ci-lista.json).
           node scripts/contenido-cifrado.mjs descifrar
-          # Las pruebas pueden venir en un paquete aparte. Si no está, ya
-          # estaban en el repo o dentro del paquete del código.
-          if [ -f contenido-cifrado/pruebas.mfenc ]; then
-            node scripts/contenido-cifrado.mjs abrir contenido-cifrado/pruebas.mfenc .
+          # El recorrido de punta a punta, que maneja la ventana, viaja en un
+          # paquete aparte y opcional (se arma con `sellar`, de scripts/contenido-cifrado.mjs).
+          if [ -f contenido-cifrado/e2e.mfenc ]; then
+            node scripts/contenido-cifrado.mjs abrir contenido-cifrado/e2e.mfenc .
           fi
           if [ ! -f main.js ] || [ ! -f preload.js ] || [ ! -f src/index.html ]; then
             echo "El descifrado no dejó main.js, preload.js y src/."
             exit 1
           fi
-          ls pruebas/*.test.mjs >/dev/null 2>&1 || { echo "No hay tests unitarios."; exit 1; }
+          [ -f pruebas/ci-lista.json ] || { echo "No está la lista de pruebas unitarias."; exit 1; }
           # El recorrido de punta a punta es opcional: sólo corre si el paquete
-          # de pruebas (contenido-cifrado/pruebas.mfenc) lo trajo. Sin él, esta
-          # corrida valida los unitarios y avisa en vez de cortar.
+          # contenido-cifrado/e2e.mfenc lo trajo. Sin él, esta corrida valida los
+          # unitarios y avisa en vez de cortar.
           [ -f pruebas/e2e.js ] || echo "Aviso: no está pruebas/e2e.js; se saltea el recorrido de punta a punta."
           echo "Código descifrado."
 
@@ -84,24 +89,14 @@ jobs:
           path: ~/Library/Caches/electron
           key: electron-mac-${{ hashFiles('package-lock.json') }}
 
-      # Un renglón por prueba. La salida completa va a un archivo que sólo
-      # sale del runner sellado.
+      # Un renglón por prueba, con su número y no con su nombre. La salida completa
+      # va a un archivo que sólo sale del runner sellado.
       - name: Tests unitarios
+        env:
+          BANCADA_LOGS_PRUEBAS: ${{ runner.temp }}/evidencia/unitarios
         run: |
           mkdir -p "$RUNNER_TEMP/evidencia/unitarios"
-          FALLO=0
-          for T in pruebas/*.test.mjs; do
-            N=$(basename "$T" .test.mjs)
-            LOG="$RUNNER_TEMP/evidencia/unitarios/$N.log"
-            set +e
-            node "$T" > "$LOG" 2>&1
-            C=$?
-            set -e
-            [ "$C" = 0 ] || FALLO=1
-            # La línea final de cada prueba trae el conteo; el resto no se muestra.
-            echo "$N exit=$C | $(tail -n 1 "$LOG" | cut -c1-110)"
-          done
-          exit $FALLO
+          node --no-warnings scripts/correr-pruebas-ci.mjs
 
       - name: Diagnóstico gráfico (sólo informativo)
         continue-on-error: true

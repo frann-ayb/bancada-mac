@@ -11,7 +11,8 @@
  *
  * Los nombres son sólo ASCII a propósito: tar en macOS y en Windows no se ponen de
  * acuerdo con la normalización de los acentos (NFC contra NFD) y un nombre con
- * tildes puede llegar partido en dos archivos.
+ * tildes puede llegar partido en dos archivos. Los nombres de acá no
+ * llevan ninguna letra acentuada, así que la regla se cumple.
  *
  * Corta si no hay exactamente dos .dmg, uno por arquitectura, o si alguno pesa
  * tan poco que no puede ser la aplicación entera.
@@ -25,10 +26,16 @@ const ORIGEN = join(ROOT, 'dist')
 const DESTINO = join(ROOT, 'Entrega Mac')
 const MIN_BYTES = 50 * 1024 * 1024
 
+// Los nombres que ve el comprador. El de Apple Silicon es el mismo en
+// cualquier idioma (son los nombres de los chips); el de Intel va en español.
 const NOMBRES = [
   { patron: /-macOS-arm64\.dmg$/, nombre: 'Bancada - Mac con chip Apple (M1, M2, M3, M4).dmg' },
   { patron: /-macOS-x64\.dmg$/, nombre: 'Bancada - Mac con Intel.dmg' }
 ]
+
+// La guía del comprador la arma otro proceso y se deja en la carpeta de entrega.
+// Si está, queda ahí (este script no la toca); si no está, la entrega se arma igual.
+const GUIA = 'Como instalar Bancada en Mac.pdf'
 
 function falla(msg) {
   console.error(`✗ ${msg}`)
@@ -57,4 +64,14 @@ for (const { patron, nombre } of NOMBRES) {
 
 const finales = readdirSync(DESTINO).filter((f) => f.endsWith('.dmg'))
 if (new Set(finales).size !== 2) falla('Los dos archivos de la entrega quedaron con el mismo nombre.')
+
+// La guía: si ya está en la carpeta de entrega, queda como está. Si no, se copia
+// desde .guia-mac/ cuando existe ahí (en la máquina de desarrollo). Si no está en
+// ningún lado, no pasa nada: los instaladores se arman igual y el aviso lo dice.
+const guiaEnEntrega = join(DESTINO, GUIA)
+const guiaDeOrigen = join(ROOT, '.guia-mac', GUIA)
+if (!existsSync(guiaEnEntrega) && existsSync(guiaDeOrigen)) copyFileSync(guiaDeOrigen, guiaEnEntrega)
+
 console.log(`✓ Entrega Mac lista: ${finales.length} instaladores`)
+if (existsSync(guiaEnEntrega)) console.log(`✓ La guía del comprador (${GUIA}) está en la entrega.`)
+else console.log(`· La guía del comprador (${GUIA}) no está: los instaladores se armaron igual.`)
